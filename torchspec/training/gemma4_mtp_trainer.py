@@ -76,6 +76,26 @@ class Gemma4MTPTrainer(DFlashTrainer):
         self.target_lm_head_weight: torch.Tensor | None = None
 
     # ------------------------------------------------------------------ build
+    def _get_init_weight_context_manager(self):
+        """All ranks build the draft on real CPU weights (no meta device).
+
+        The base class puts non-rank-0 processes on meta device and relies on
+        fsdp2_load_full_state_dict to materialize them from rank 0's broadcast.
+        That works for the custom small drafts (DFlash/Eagle3) but NOT for our
+        draft, which wraps HF ``Gemma4AssistantForCausalLM``: HF module init on
+        meta device leaves some params unmaterialized after FSDP load, so the
+        optimizer's clone() on ranks 1..N-1 blocks on never-completed
+        materialization while rank 0 sails through — the exact rank-drift
+        deadlock py-spy caught (ranks 2-6 stuck in optimizer.clone, ranks 0/1 at
+        the finalize_load barrier). The draft is only 419M, so real CPU init on
+        every rank is cheap and removes the meta-device hazard entirely.
+        """
+
+        def cpu_init_weights():
+            return torch.device("cpu")
+
+        return cpu_init_weights
+
     def _make_mooncake_store(self, mooncake_config):
         from torchspec.transfer.mooncake.gemma4_mtp_store import Gemma4MTPMooncakeStore
 
@@ -103,12 +123,6 @@ class Gemma4MTPTrainer(DFlashTrainer):
         target_model_path: str,
         mooncake_config=None,
     ) -> int:
-        # Ray runs init() as a separate actor-method call. Align all ranks with
-        # a device-agnostic gloo barrier (CPU — cannot hang on a CUDA device
-        # mismatch) before the first NCCL collective, so no rank races ahead into
-        # FSDP load / the finalize_load barrier and deadlocks the others.
-        dist.barrier(group=get_gloo_group())
-
         if mooncake_config is not None:
             from torchspec.transfer.mooncake.utils import check_mooncake_master_available
 
