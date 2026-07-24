@@ -186,6 +186,16 @@ class Gemma4MTPTrainer(DFlashTrainer):
             cpu_offload=True if self.fsdp_cpu_offload else None,
         )
 
+        # fsdp2_load_full_state_dict broadcasts params from rank0 with
+        # non_blocking=True; the transfers are still in flight when the
+        # optimizer clones the params for its fp32 master copy. On non-rank0
+        # the clone reads not-yet-filled tensors and blocks on the pending
+        # broadcast while rank0 races ahead to the next barrier -> cross-rank
+        # deadlock (100% util, 120W spin). Force the broadcast to land and
+        # align all ranks before optimizer construction.
+        torch.cuda.synchronize()
+        dist.barrier(group=get_gloo_group())
+
         if getattr(self.args, "compile_model", False):
             logger.info("Compiling Gemma4 MTP model with torch.compile")
             mtp_model = torch.compile(mtp_model)
