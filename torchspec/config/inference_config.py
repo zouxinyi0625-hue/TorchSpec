@@ -182,3 +182,7 @@ class HFInferenceConfig:
     trust_remote_code: bool = False
     aux_hidden_states_layers: Optional[list[int]] = None
     mooncake_config: Optional[MooncakeConfig] = None
+    # When True, the runner produces the Gemma4 MTP contract (last_hidden +
+    # shared_kv) via Gemma4MTPTargetModel + Gemma4MTPMooncakeStore instead of
+    # the Eagle3 aux-hidden-state contract.
+    mtp_mode: bool = False

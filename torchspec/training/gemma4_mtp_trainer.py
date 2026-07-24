@@ -67,6 +67,16 @@ class Gemma4MTPTrainer(Trainer):
         self.target_lm_head_weight: torch.Tensor | None = None
 
     # ------------------------------------------------------------------ build
+    def _make_mooncake_store(self, mooncake_config):
+        from torchspec.transfer.mooncake.gemma4_mtp_store import Gemma4MTPMooncakeStore
+
+        return Gemma4MTPMooncakeStore(mooncake_config)
+
+    def _make_collator(self, usp_enabled: bool):
+        from torchspec.data.gemma4_mtp_collator import Gemma4MTPCollator
+
+        return Gemma4MTPCollator(usp_enabled=usp_enabled)
+
     def _build_draft_model(self, config: Gemma4MTPConfig) -> Gemma4MTPDraftModel:
         return Gemma4MTPDraftModel(config)
 

@@ -89,12 +89,20 @@ class HFRunner:
                 "or as argument to init_mooncake_store()"
             )
 
-        store = EagleMooncakeStore(mooncake_config)
+        if getattr(self.config, "mtp_mode", False):
+            from torchspec.transfer.mooncake.gemma4_mtp_store import Gemma4MTPMooncakeStore
+
+            store = Gemma4MTPMooncakeStore(mooncake_config)
+        else:
+            store = EagleMooncakeStore(mooncake_config)
         store.setup(device=torch.cuda.current_device())
         self.mooncake_store = store
 
         tp_rank = self._get_tp_rank()
-        logger.info(f"[Rank {tp_rank}] EagleMooncakeStore initialized")
+        logger.info(
+            f"[Rank {tp_rank}] {type(store).__name__} initialized "
+            f"(mtp_mode={getattr(self.config, 'mtp_mode', False)})"
+        )
 
         return store
 
@@ -184,6 +192,16 @@ class HFRunner:
         }
         torch_dtype = dtype_map.get(self.config.torch_dtype, torch.bfloat16)
 
+        if getattr(self.config, "mtp_mode", False):
+            from torchspec.models.target.gemma4_mtp_target import Gemma4MTPTargetModel
+
+            self.target_model = Gemma4MTPTargetModel.from_pretrained(
+                pretrained_model_name_or_path=self.config.model_path,
+                torch_dtype=torch_dtype,
+            )
+            # MTP does not use aux hidden state layers.
+            return
+
         self.target_model = HFTargetModel.from_pretrained(
             pretrained_model_name_or_path=self.config.model_path,
             torch_dtype=torch_dtype,
@@ -231,13 +249,17 @@ class HFRunner:
         for i, sample in enumerate(inference_outputs):
             if self.mooncake_store is not None:
                 key = str(uuid.uuid4())
-                store_meta = self.mooncake_store.put(
-                    key=key,
-                    hidden_states=sample["hidden_states"],
-                    target=sample["target"],
-                    input_ids=sample["input_ids"],
-                    last_hidden_states=sample["last_hidden_states"],
-                )
+                if getattr(self.config, "mtp_mode", False):
+                    # MTP store.put takes the Gemma4MTPTargetOutput directly.
+                    store_meta = self.mooncake_store.put(key=key, output=sample["mtp_output"])
+                else:
+                    store_meta = self.mooncake_store.put(
+                        key=key,
+                        hidden_states=sample["hidden_states"],
+                        target=sample["target"],
+                        input_ids=sample["input_ids"],
+                        last_hidden_states=sample["last_hidden_states"],
+                    )
 
                 results.append(
                     {
@@ -269,10 +291,20 @@ class HFRunner:
         """
         input_ids = [ids.unsqueeze(0) if ids.dim() == 1 else ids for ids in input_ids]
 
+        mtp_mode = getattr(self.config, "mtp_mode", False)
         results = []
         for ids in input_ids:
             attention_mask = torch.ones_like(ids)
             loss_mask = torch.ones_like(ids)
+
+            if mtp_mode:
+                mtp_output = self.target_model.generate_mtp_data(
+                    input_ids=ids,
+                    attention_mask=attention_mask,
+                    loss_mask=loss_mask,
+                )
+                results.append({"mtp_output": mtp_output})
+                continue
 
             output = self.target_model.generate_eagle3_data(
                 input_ids=ids,
