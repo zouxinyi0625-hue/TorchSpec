@@ -27,6 +27,7 @@ import torch.distributed as dist
 from torchspec import AutoDraftModelConfig
 from torchspec.models.draft.dflash import DFlashConfig
 from torchspec.models.draft.dspark import DSparkConfig
+from torchspec.models.draft.gemma4_mtp import Gemma4MTPConfig
 from torchspec.ray.ray_actor import RayActor
 from torchspec.training.eagle3_trainer import Eagle3Trainer
 from torchspec.utils.distributed import init_gloo_group, init_usp_groups
@@ -78,10 +79,16 @@ class TrainerActor(RayActor):
 
         # Config-based trainer dispatch.
         # DSparkConfig subclasses DFlashConfig, so it must be checked first.
+        # Gemma4MTPConfig is independent (not a DFlash subclass).
+        # - Gemma4MTPConfig → Gemma4MTPTrainer
         # - DSparkConfig → DSparkTrainer
         # - DFlashConfig → DFlashTrainer
         # - else Eagle3.
-        if isinstance(draft_model_config, DSparkConfig):
+        if isinstance(draft_model_config, Gemma4MTPConfig):
+            from torchspec.training.gemma4_mtp_trainer import Gemma4MTPTrainer
+
+            self._trainer = Gemma4MTPTrainer(args)
+        elif isinstance(draft_model_config, DSparkConfig):
             from torchspec.training.dspark_trainer import DSparkTrainer
 
             self._trainer = DSparkTrainer(args)
