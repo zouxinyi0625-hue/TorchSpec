@@ -18,11 +18,11 @@ model:
   draft_model_config: configs/draft_models/gemma4_mtp.json
 
 dataset:
-  train_data_path: ../examples/data/sample_conversations.jsonl
-  eval_data_path: null
-  eval_interval: 500              # eval every 500 steps (32k-row eval set is slow)
-  max_eval_samples: 2000          # sample 2k eval rows for a stable accept signal
-  chat_template: gemma          # adjust to the Gemma4 chat template name in your build
+  train_data_path: ./data/train_layer1_delta.jsonl
+  eval_data_path: ./data/eval_layer1_delta_1000.jsonl
+  eval_interval: 500              # eval every 500 steps
+  max_eval_samples: 1000          # eval subset is already 1000; this is a safety cap
+  chat_template: gemma
   prompt_key: conversations
   min_loss_tokens: 32
 
@@ -38,7 +38,7 @@ training:
   max_seq_length: 2048
   num_epochs: 3
   seed: 42
-  training_num_gpus_per_node: 4
+  training_num_gpus_per_node: 7
   training_num_nodes: 1
   fsdp_strategy: FULL_SHARD
   fsdp_reduce_dtype: bfloat16
@@ -57,9 +57,9 @@ inference:
   inference_engine_type: hf
   mtp_mode: true                   # <-- switches to Gemma4 MTP data contract
   store_last_hidden_states: false
-  inference_num_gpus: 4
-  inference_num_gpus_per_engine: 4 # size to fit the MoE target (TP)
-  inference_num_gpus_per_node: 4
+  inference_num_gpus: 1            # target fits on 1 GPU
+  inference_num_gpus_per_engine: 1
+  inference_num_gpus_per_node: 1
   max_sample_pool_size: 32
   inference_buffer_threshold: 16
   inference_batch_size: 2
