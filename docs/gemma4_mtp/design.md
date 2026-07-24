@@ -43,9 +43,27 @@ before a full distributed run (each depends on the live Ray/Mooncake stack):
   draft_model_config=configs/draft_models/gemma4_mtp.json, with the
   `gemma4_mtp_num_steps/teacher_force/loss_decay_gamma` knobs.
 
-These are the connective tissue between the (verified) model/trainer/store and
-the existing async pipeline. Recommend wiring G1+G2 first and doing an
-offline-replay single-GPU run before scaling out.
+### Integration status (G1-G5) — wired, pending a live multi-GPU run
+
+- **G1 inference** ✅ `HFInferenceConfig.mtp_mode` + `HFRunner` branch to
+  `Gemma4MTPTargetModel` / `Gemma4MTPMooncakeStore`; `HFEngine` passes
+  `mtp_mode` through; `InferenceConfig.mtp_mode` is YAML-settable.
+- **G2 fetcher** ✅ `MooncakeDataset` handles dict `get()` + `remove_mtp_tensors`;
+  base `Trainer` has `_make_mooncake_store` / `_make_collator` hooks overridden
+  by `Gemma4MTPTrainer` (→ `Gemma4MTPMooncakeStore` + `Gemma4MTPCollator`).
+- **G3 controller** ✅ verified generic (tensor_shapes/dtypes passthrough,
+  `_seq_len(input_ids)`, `estimate_tensor_bytes`) — no Eagle3 assumption.
+- **G4 buffers** ✅ run config bumps `global_segment_size: 32GB` / `local_buffer_size: 8GB`.
+- **G5 run config** ✅ `configs/hf_gemma4_mtp.yaml` + TrainingConfig MTP knobs.
+
+Launch (multi-GPU, HF backend):
+```bash
+python -m torchspec.train_entry --config configs/hf_gemma4_mtp.yaml \
+    dataset.train_data_path=/path/to/data.jsonl output_dir=./outputs/gemma4-mtp
+```
+Watch: loss should fall and per-step accept (acc_per_step[0]) should climb above
+the ~0.55 zero-train baseline. Mooncake must be installed for the matching CUDA
+(cu12): `uv pip install mooncake-transfer-engine`.
 
 ### Consistency cruxes — all three now cleared ✅
 
