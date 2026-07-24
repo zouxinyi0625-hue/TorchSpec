@@ -71,19 +71,46 @@ def main():
     print(f"offic #tokens={len(off_ids)}")
 
     if ours_ids == off_ids:
-        print("MATCH: token sequences identical ✅ — loss-mask spans will align.")
-        return
+        print("MATCH: token sequences identical ✅ — formatting aligns.")
+    else:
+        # Show first divergence for debugging.
+        n = min(len(ours_ids), len(off_ids))
+        div = next((i for i in range(n) if ours_ids[i] != off_ids[i]), n)
+        print(f"DIVERGE at token index {div}:")
+        lo = max(0, div - 4)
+        print(f"  ours [{lo}:{div+4}] = {ours_ids[lo:div+4]}")
+        print(f"  offic[{lo}:{div+4}] = {off_ids[lo:div+4]}")
+        print(f"  ours  decoded around: {tok.decode(ours_ids[lo:div+4])!r}")
+        print(f"  offic decoded around: {tok.decode(off_ids[lo:div+4])!r}")
+        print("MISMATCH ❌ — adjust the 'gemma' template headers, then re-run.")
 
-    # Show first divergence for debugging.
-    n = min(len(ours_ids), len(off_ids))
-    div = next((i for i in range(n) if ours_ids[i] != off_ids[i]), n)
-    print(f"DIVERGE at token index {div}:")
-    lo = max(0, div - 4)
-    print(f"  ours [{lo}:{div+4}] = {ours_ids[lo:div+4]}")
-    print(f"  offic[{lo}:{div+4}] = {off_ids[lo:div+4]}")
-    print(f"  ours  decoded around: {tok.decode(ours_ids[lo:div+4])!r}")
-    print(f"  offic decoded around: {tok.decode(off_ids[lo:div+4])!r}")
-    print("MISMATCH ❌ — adjust the 'gemma' template headers to match, then re-run.")
+    # ---- CRITICAL: loss mask must be non-empty and cover the assistant spans ----
+    # GeneralParser.format uses the official template, but .parse regex-matches
+    # the template's assistant_header/end_of_turn_token to locate assistant spans.
+    # If those strings don't match what the official template emits, the loss
+    # mask is empty and training gets zero gradient.
+    print("\n" + "=" * 70)
+    print("Loss-mask span check (the thing that actually matters):")
+    input_ids, loss_mask = parser.parse(ours, max_length=512, preformatted=True)
+    n_tok = int(loss_mask.numel())
+    n_sup = int(loss_mask.sum())
+    print(f"  seq_len={n_tok}  supervised_tokens={n_sup}  ratio={n_sup / max(1, n_tok):.2f}")
+
+    if n_sup == 0:
+        print("  EMPTY LOSS MASK ❌ — assistant_header/end_of_turn_token do NOT "
+              "match the official template output. Fix the 'gemma' template.")
+        raise SystemExit(1)
+
+    # Decode the supervised tokens; they should be the assistant answers.
+    sup_ids = [int(i) for i, m in zip(input_ids.tolist(), loss_mask.tolist()) if m > 0.5]
+    decoded = tok.decode(sup_ids)
+    print(f"  supervised text (decoded): {decoded!r}")
+    ok = "Paris" in decoded and "Tokyo" in decoded
+    print("  covers assistant answers ✅" if ok else
+          "  WARNING: supervised text missing expected answers — inspect above ⚠️")
+    if not ok:
+        raise SystemExit(1)
+    print("\nDATA READY ✅ — format aligns and loss mask covers assistant spans.")
 
 
 if __name__ == "__main__":

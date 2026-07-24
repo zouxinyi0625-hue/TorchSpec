@@ -277,18 +277,22 @@ TEMPLATE_REGISTRY.register(
     ),
 )
 
-# Gemma (v2/v3/v4) chat format:
-#   <start_of_turn>user\n{content}<end_of_turn>\n
-#   <start_of_turn>model\n{content}<end_of_turn>\n
-# Gemma has no dedicated system role — system content is conventionally folded
-# into the first user turn, so system_prompt is None. The internal role stays
-# "assistant"; the model-side header string carries Gemma's "model" turn name.
+# Gemma4 (MaiProfile build) chat format. The official apply_chat_template
+# renders turns as:
+#   <|turn>user\n{content}<turn|>\n
+#   <|turn>model\n{content}<turn|>\n
+# NOTE: GeneralParser.format prefers the tokenizer's own apply_chat_template,
+# but GeneralParser.parse locates the assistant span by regex-matching these
+# header/end strings against that rendered text — so assistant_header /
+# end_of_turn_token MUST equal the strings the official template emits, or the
+# loss mask ends up empty. Verified token-identical + non-empty loss mask via
+# tools/gemma4_mtp/verify_chat_template.py on the MaiProfile Gemma4 build.
 TEMPLATE_REGISTRY.register(
     name="gemma",
     template=ChatTemplate(
-        assistant_header="<start_of_turn>model\n",
-        user_header="<start_of_turn>user\n",
+        assistant_header="<|turn>model\n",
+        user_header="<|turn>user\n",
         system_prompt=None,
-        end_of_turn_token="<end_of_turn>\n",
+        end_of_turn_token="<turn|>\n",
     ),
 )
