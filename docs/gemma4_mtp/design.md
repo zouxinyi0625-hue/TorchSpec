@@ -10,11 +10,42 @@
 | 1 | Draft config | `configs/draft_models/gemma4_mtp.json` | — | ✅ done |
 | 2 | Draft model wrapper (wraps HF `Gemma4AssistantForCausalLM`) | `torchspec/models/draft/gemma4_mtp.py` | probes | ✅ done (parity fp32 diff==0) |
 | 3 | Training wrapper (TTT-style MTP unroll + loss) | `torchspec/models/gemma4_mtp.py` | #2 | ✅ done |
-| 4 | Trainer | `torchspec/training/gemma4_mtp_trainer.py` | #2,#3 | ⏳ next |
-| 5 | Target extractor: last hidden + shared_kv per layer_type | `torchspec/models/target/gemma4_mtp_target.py` | — | ⏳ next |
-| 6 | Mooncake schema: carry shared_kv tensors | extend `eagle_store.py` (or a `gemma4_mtp_store.py`) | #5 | ⏳ |
-| 7 | Registration (config→model, config→trainer) | `auto.py`, `trainer_actor.py` | #2,#4 | 🟡 model done; trainer dispatch pending #4 |
+| 4 | Trainer | `torchspec/training/gemma4_mtp_trainer.py` | #2,#3 | ✅ done |
+| 5 | Target extractor: last hidden + shared_kv per layer_type | `torchspec/models/target/gemma4_mtp_target.py` | — | ✅ done |
+| 6 | Mooncake schema: carry shared_kv tensors | `torchspec/transfer/mooncake/gemma4_mtp_store.py` | #5 | ✅ done |
+| 7 | Registration (config→model, config→trainer) | `auto.py`, `trainer_actor.py` | #2,#4 | ✅ done |
 | 8 | Parity test vs HF assistant (bit-align) | `tools/gemma4_mtp/verify_parity.py` | #2,#3 | ✅ done (fp32 diff==0) |
+
+### Remaining integration gaps (server-side, cannot be验证 locally)
+
+The 8 core components are written and unit-smoke-tested. What still needs wiring
+before a full distributed run (each depends on the live Ray/Mooncake stack):
+
+- **G1 — inference engine hookup**: the inference-side engine must call the
+  Gemma4 target with `return_shared_kv_states=True` and store via
+  `Gemma4MTPMooncakeStore.put(key, Gemma4MTPTargetOutput)`. Today `HFRunner` /
+  the engines produce `Eagle3TargetOutput`; add a Gemma4-MTP path (mirror how
+  DFlash selects its target output) — likely a new runner branch or a
+  `target_model_backend`/`draft type` switch in `inference/factory.py`.
+- **G2 — data fetcher get()**: `MooncakeDataFetcher` currently builds an
+  `Eagle3TargetOutput` via `EagleMooncakeStore.get`. Route Gemma4 MTP keys to
+  `Gemma4MTPMooncakeStore.get` (returns a dict batch) so the trainer `_forward`
+  receives `last_hidden/sliding_k/.../loss_mask`.
+- **G3 — controller metadata**: the controller passes `tensor_shapes/dtypes`
+  from put → get. The MTP put returns the same `{"shapes","dtypes"}` shape, so
+  this should flow through unchanged — verify no Eagle3-specific key assumptions
+  (e.g. hard-coded `"hidden_states"`).
+- **G4 — buffer sizing**: KV is heavy (~T*8KB/sample KV + T*5.6KB hidden).
+  Confirm Mooncake `global_segment_size` / `host_buffer_size` / `gpu_buffer_size`
+  are large enough (design D1); bump in the run config if `batch_put_from` fails.
+- **G5 — run config + example**: add a `configs/gemma4_mtp_*.yaml` +
+  `examples/gemma4-mtp/run.sh` wiring target=/tmp/models/gemma4/text_only,
+  draft_model_config=configs/draft_models/gemma4_mtp.json, with the
+  `gemma4_mtp_num_steps/teacher_force/loss_decay_gamma` knobs.
+
+These are the connective tissue between the (verified) model/trainer/store and
+the existing async pipeline. Recommend wiring G1+G2 first and doing an
+offline-replay single-GPU run before scaling out.
 
 ### Consistency cruxes — all three now cleared ✅
 
