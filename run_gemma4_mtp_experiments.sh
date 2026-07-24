@@ -29,6 +29,9 @@ L1_TRAIN="../data/train_layer1_delta.jsonl"
 L1_EVAL="../data/eval_layer1_delta_1000.jsonl"
 
 CONFIG="configs/hf_gemma4_mtp.yaml"
+# Shared overrides applied to BOTH experiments (kept here so experiment params
+# are visible in one place, not buried in the yaml).
+COMMON_OVERRIDES="training.max_seq_length=4096"
 TS="$(date +%Y%m%d_%H%M%S)"
 LOGDIR="./logs/gemma4_mtp"
 mkdir -p "$LOGDIR"
@@ -67,7 +70,7 @@ if [[ "$MODE" == "layer1" || "$MODE" == "both" ]]; then
   run_exp "exp1_layer1_delta" \
           "$L1_TRAIN" "$L1_EVAL" \
           "./outputs/gemma4-mtp/exp1_layer1_delta" \
-          ""
+          "$COMMON_OVERRIDES"
 fi
 
 if [[ "$MODE" == "full" || "$MODE" == "both" ]]; then
@@ -76,7 +79,7 @@ if [[ "$MODE" == "full" || "$MODE" == "both" ]]; then
   run_exp "exp2_full" \
           "$FULL_TRAIN" "$FULL_EVAL" \
           "./outputs/gemma4-mtp/exp2_full" \
-          "dataset.max_eval_samples=1000"
+          "$COMMON_OVERRIDES dataset.max_eval_samples=1000"
 fi
 
 echo "[$(date '+%F %T')] ALL REQUESTED EXPERIMENTS FINISHED."
