@@ -103,6 +103,12 @@ class Gemma4MTPTrainer(DFlashTrainer):
         target_model_path: str,
         mooncake_config=None,
     ) -> int:
+        # Ray runs init() as a separate actor-method call. Align all ranks with
+        # a device-agnostic gloo barrier (CPU — cannot hang on a CUDA device
+        # mismatch) before the first NCCL collective, so no rank races ahead into
+        # FSDP load / the finalize_load barrier and deadlocks the others.
+        dist.barrier(group=get_gloo_group())
+
         if mooncake_config is not None:
             from torchspec.transfer.mooncake.utils import check_mooncake_master_available
 
@@ -191,17 +197,6 @@ class Gemma4MTPTrainer(DFlashTrainer):
         self.lr_scheduler = self.optimizer.lr_scheduler
 
         checkpoint_payload = checkpoint.load(self)
-        # finalize_load issues a bare dist.barrier() on the default NCCL process
-        # group. DFlash/Eagle3 reach the same barrier only AFTER broadcasting
-        # target_lm_head on the default group, which lazily initializes the
-        # group's NCCL communicator on the correct per-rank device. Our target
-        # weights load purely locally, so this barrier would be the default
-        # group's first collective — and lazy-init under a mis-guessed device
-        # makes every rank land on cuda:0 and hang. Prime the communicator with a
-        # tiny broadcast on this actor's own device first.
-        torch.cuda.set_device(torch.cuda.current_device())
-        _warmup = torch.zeros(1, device="cuda")
-        dist.broadcast(_warmup, src=0)
         checkpoint.finalize_load(self, checkpoint_payload)
 
         self._init_target_weights(target_model_path)
