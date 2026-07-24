@@ -27,13 +27,13 @@ import torch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 
-def build_inputs(target_path, assistant_path, seq_text, device):
+def build_inputs(target_path, assistant_path, seq_text, device, dtype):
     """Produce a realistic (inputs_embeds, position_ids, shared_kv_states) triple
     straight from the target model, exactly as the HF candidate generator does."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     target = AutoModelForCausalLM.from_pretrained(
-        target_path, dtype=torch.bfloat16, trust_remote_code=True
+        target_path, dtype=dtype, trust_remote_code=True
     ).eval().to(device)
     tok = AutoTokenizer.from_pretrained(target_path, trust_remote_code=True)
     ids = tok(seq_text, return_tensors="pt").input_ids.to(device)
@@ -54,18 +54,22 @@ def main():
     ap.add_argument("--target", default="/tmp/models/gemma4/text_only")
     ap.add_argument("--assistant", default="/tmp/models/gemma4/assistant")
     ap.add_argument("--seq-text", default="The quick brown fox jumps over the lazy dog")
+    ap.add_argument("--dtype", default="float32", choices=["float32", "bfloat16"],
+                    help="Compute dtype for BOTH models. Use float32 to separate "
+                         "structural mismatch from bf16 rounding.")
     args = ap.parse_args()
 
+    torch_dtype = getattr(torch, args.dtype)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     inputs_embeds, position_ids, shared_kv = build_inputs(
-        args.target, args.assistant, args.seq_text, device
+        args.target, args.assistant, args.seq_text, device, torch_dtype
     )
 
     # --- reference: raw HF assistant ---
     from transformers import Gemma4AssistantForCausalLM
 
     hf = Gemma4AssistantForCausalLM.from_pretrained(
-        args.assistant, dtype=torch.bfloat16, trust_remote_code=True
+        args.assistant, dtype=torch_dtype, trust_remote_code=True
     ).eval().to(device)
     with torch.no_grad():
         ref = hf(inputs_embeds=inputs_embeds, position_ids=position_ids,
@@ -76,9 +80,9 @@ def main():
 
     cfg = Gemma4MTPConfig(assistant_model_path=args.assistant,
                           target_model_path=args.target)
-    ours = Gemma4MTPDraftModel(cfg).eval().to(device=device, dtype=torch.bfloat16)
+    ours = Gemma4MTPDraftModel(cfg).eval().to(device=device, dtype=torch_dtype)
     ours.load_assistant_weights(args.assistant)
-    ours.to(device=device, dtype=torch.bfloat16)
+    ours.to(device=device, dtype=torch_dtype)
     with torch.no_grad():
         logits, last_hs = ours(
             inputs_embeds=inputs_embeds, position_ids=position_ids,
@@ -87,13 +91,17 @@ def main():
 
     d_logits = (logits.float() - ref.logits.float()).abs().max().item()
     d_hs = (last_hs.float() - ref.last_hidden_state.float()).abs().max().item()
+    print(f"dtype           {args.dtype}")
     print(f"logits          shape ours={tuple(logits.shape)} ref={tuple(ref.logits.shape)}")
     print(f"last_hidden     shape ours={tuple(last_hs.shape)} ref={tuple(ref.last_hidden_state.shape)}")
     print(f"max_abs_diff    logits={d_logits:.3e}  last_hidden={d_hs:.3e}")
+
+    # fp32 must be ~exact (only matmul-order noise); bf16 tolerates rounding.
+    tol = 1e-4 if args.dtype == "float32" else 5e-1
     if d_logits == 0.0 and d_hs == 0.0:
         print("PARITY OK (diff==0) ✅")
-    elif max(d_logits, d_hs) < 1e-3:
-        print(f"PARITY ~OK (diff<1e-3, likely nondeterministic matmul) ⚠️")
+    elif max(d_logits, d_hs) < tol:
+        print(f"PARITY OK (diff<{tol:g}, {args.dtype} matmul-order noise) ✅")
     else:
         print("PARITY FAILED ❌ — investigate before training")
         raise SystemExit(1)
