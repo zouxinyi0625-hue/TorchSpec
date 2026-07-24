@@ -87,14 +87,25 @@ class TargetLMHead(nn.Module):
             with open(index_files[0], "r") as f:
                 index = json.load(f)
             weight_map = index.get("weight_map", {})
-            if lm_head_key in weight_map:
-                file_path = os.path.join(model_path, weight_map[lm_head_key])
-                self._load_key_from_file(file_path, lm_head_key)
-            else:
-                raise KeyError(
-                    f"lm_head_key '{lm_head_key}' not found in weight_map. "
-                    f"Available keys: {list(weight_map.keys())[:10]}..."
-                )
+            resolved_key = lm_head_key
+            if resolved_key not in weight_map:
+                # Tied embeddings (e.g. Gemma, tie_word_embeddings=True): the
+                # checkpoint stores no standalone lm_head.weight; lm_head reuses
+                # the input embedding matrix. Fall back to the embed_tokens key.
+                embed_candidates = [
+                    k for k in weight_map
+                    if k.endswith("embed_tokens.weight")
+                ]
+                if embed_candidates:
+                    resolved_key = sorted(embed_candidates, key=len)[0]
+                else:
+                    raise KeyError(
+                        f"lm_head_key '{lm_head_key}' not found in weight_map "
+                        f"and no embed_tokens.weight fallback available. "
+                        f"Available keys: {list(weight_map.keys())[:10]}..."
+                    )
+            file_path = os.path.join(model_path, weight_map[resolved_key])
+            self._load_key_from_file(file_path, resolved_key)
         else:
             safetensors = glob.glob(os.path.join(model_path, "*.safetensors"))
             bins = glob.glob(os.path.join(model_path, "*.bin"))
