@@ -197,9 +197,16 @@ class HFRunner:
         if getattr(self.config, "mtp_mode", False):
             from torchspec.models.target.gemma4_mtp_target import Gemma4MTPTargetModel
 
+            # Pin the target to THIS engine's single GPU (HFEngine already called
+            # setup_gpu(base_gpu_id) so the visible cuda:0 is the assigned card).
+            # Without an explicit device, gemma4_mtp_target defaults to
+            # device_map="auto", which shards the MoE target across ALL visible
+            # GPUs and collides with the training actors on cards 0..N-1.
+            target_device = f"cuda:{torch.cuda.current_device()}"
             self.target_model = Gemma4MTPTargetModel.from_pretrained(
                 pretrained_model_name_or_path=self.config.model_path,
                 torch_dtype=torch_dtype,
+                device=target_device,
             )
             # MTP does not use aux hidden state layers.
             return
