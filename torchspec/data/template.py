@@ -276,3 +276,19 @@ TEMPLATE_REGISTRY.register(
         end_of_turn_token="<|user|>",
     ),
 )
+
+# Gemma (v2/v3/v4) chat format:
+#   <start_of_turn>user\n{content}<end_of_turn>\n
+#   <start_of_turn>model\n{content}<end_of_turn>\n
+# Gemma has no dedicated system role — system content is conventionally folded
+# into the first user turn, so system_prompt is None. The internal role stays
+# "assistant"; the model-side header string carries Gemma's "model" turn name.
+TEMPLATE_REGISTRY.register(
+    name="gemma",
+    template=ChatTemplate(
+        assistant_header="<start_of_turn>model\n",
+        user_header="<start_of_turn>user\n",
+        system_prompt=None,
+        end_of_turn_token="<end_of_turn>\n",
+    ),
+)
