@@ -158,10 +158,11 @@ class Gemma4MTPDraftModel(PreTrainedModel):
     def _build_hf_assistant(config: Gemma4MTPConfig) -> nn.Module:
         """Instantiate HF Gemma4AssistantForCausalLM from config.
 
-        We construct from an HF ``Gemma4AssistantConfig`` so parity is exact.
-        Weights (if a checkpoint path is given) are loaded separately by the
-        trainer via ``load_assistant_weights`` to keep this constructor cheap
-        under ``init_empty_weights``.
+        Most faithful path: when ``assistant_model_path`` is set, load the HF
+        ``Gemma4AssistantConfig`` straight from the checkpoint so every field
+        (hidden_size_per_layer_input, layer_types, rope_parameters, ...) matches
+        exactly. Only synthesise a config as a fallback for the pathless case.
+        Weights are loaded separately by ``load_assistant_weights``.
         """
         try:
             from transformers import Gemma4AssistantConfig, Gemma4AssistantForCausalLM
@@ -171,7 +172,11 @@ class Gemma4MTPDraftModel(PreTrainedModel):
                 f"Import failed: {e}"
             )
 
-        hf_cfg = Gemma4MTPDraftModel._to_hf_assistant_config(config, Gemma4AssistantConfig)
+        path = getattr(config, "assistant_model_path", None)
+        if path is not None:
+            hf_cfg = Gemma4AssistantConfig.from_pretrained(path)
+        else:
+            hf_cfg = Gemma4MTPDraftModel._to_hf_assistant_config(config, Gemma4AssistantConfig)
         return Gemma4AssistantForCausalLM(hf_cfg)
 
     @staticmethod
@@ -203,6 +208,10 @@ class Gemma4MTPDraftModel(PreTrainedModel):
                 "max_position_embeddings": config.max_position_embeddings,
                 "tie_word_embeddings": config.tie_word_embeddings,
                 "model_type": "gemma4_text",
+                # Gemma4Assistant validator requires this to be 0 (no per-layer
+                # input embeddings on the assistant backbone).
+                "hidden_size_per_layer_input": 0,
+                "enable_moe_block": False,
             }
         return hf_config_cls(**kwargs)
 
