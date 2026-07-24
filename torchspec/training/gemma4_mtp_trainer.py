@@ -45,17 +45,26 @@ import torch.distributed as dist
 from torchspec.models.draft.gemma4_mtp import Gemma4MTPConfig, Gemma4MTPDraftModel
 from torchspec.models.gemma4_mtp import Gemma4MTPModel
 from torchspec.training import checkpoint
+from torchspec.training.dflash_trainer import DFlashTrainer
 from torchspec.training.fsdp import apply_fsdp2, fsdp2_load_full_state_dict
 from torchspec.training.optimizer import BF16Optimizer
-from torchspec.training.trainer import Trainer
 from torchspec.utils.distributed import get_gloo_group
 from torchspec.utils.logging import logger
 
 
-class Gemma4MTPTrainer(Trainer):
-    """Trainer for the Gemma4 MTP draft (assistant)."""
+class Gemma4MTPTrainer(DFlashTrainer):
+    """Trainer for the Gemma4 MTP draft (assistant).
+
+    Inherits DFlashTrainer's generic training loop, per-position metric
+    reduction, ``_train_step`` and ``_aggregate_metrics`` (MTP's ``_forward``
+    returns the same 6-tuple contract). Overrides only model/store/collator
+    construction, ``init_model`` and ``_forward``.
+    """
 
     _draft_config_class = Gemma4MTPConfig
+    # MTP supervises a real predicted token at every unroll step — there is no
+    # anchor slot to drop (unlike DFlash's index-0 anchor).
+    _anchor_slot_offset = 0
 
     def __init__(self, args: Namespace):
         super().__init__(args)
