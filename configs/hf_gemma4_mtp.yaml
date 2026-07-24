@@ -20,6 +20,8 @@ model:
 dataset:
   train_data_path: ../examples/data/sample_conversations.jsonl
   eval_data_path: null
+  eval_interval: 500              # eval every 500 steps (32k-row eval set is slow)
+  max_eval_samples: 2000          # sample 2k eval rows for a stable accept signal
   chat_template: gemma          # adjust to the Gemma4 chat template name in your build
   prompt_key: conversations
   min_loss_tokens: 32

@@ -39,6 +39,10 @@ class DatasetConfig:
     eval_interval: int = 50
     eval_micro_batch_size: Optional[int] = None
     eval_prompt_key: Optional[str] = None
+    # Cap the number of eval samples actually used (0 = use all). Large eval
+    # sets (e.g. tens of thousands of rows) make each eval pass very slow; a few
+    # hundred–thousand sampled rows give a stable accept-rate signal.
+    max_eval_samples: int = 0
     last_turn_loss_only: Any = "auto"  # bool or "auto"
     min_loss_tokens: int = 0  # DFlash: skip sequences with < N supervised tokens (use 2*block_size)
     prompt_key: str = "conversations"
