@@ -18,8 +18,13 @@ Run on the server (GPU, needs the real weights):
 Expected: "PARITY OK (max_abs_diff=0.0 ...)".
 """
 import argparse
+import os
+import sys
 
 import torch
+
+# Allow running from a fresh checkout without `pip install -e .`
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 
 def build_inputs(target_path, assistant_path, seq_text, device):
