@@ -18,8 +18,8 @@ model:
   draft_model_config: configs/draft_models/gemma4_mtp.json
 
 dataset:
-  train_data_path: ./data/train_layer1_delta.jsonl
-  eval_data_path: ./data/eval_layer1_delta_1000.jsonl
+  train_data_path: ../data/train_layer1_delta.jsonl
+  eval_data_path: ../data/eval_layer1_delta_1000.jsonl
   eval_interval: 500              # eval every 500 steps
   max_eval_samples: 1000          # eval subset is already 1000; this is a safety cap
   chat_template: gemma
