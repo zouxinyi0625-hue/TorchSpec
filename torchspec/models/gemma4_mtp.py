@@ -148,9 +148,19 @@ class Gemma4MTPModel(nn.Module):
         total_correct = input_ids.new_zeros((), dtype=torch.float32)
         total_count = input_ids.new_zeros((), dtype=torch.float32)
 
+        # Gemma scales input token embeddings by sqrt(hidden) inside embed_tokens
+        # (embed_scale, applied in bf16). The MTP token half uses the TARGET 2816d
+        # embedding table, so the scale is sqrt(2816)~=53.07 — NOT the draft's own
+        # 1024d embed_scale (32.0). HF's assisted-decoding path builds inputs_embeds
+        # from target_model_input_embeddings (the scaled embed_tokens module), so we
+        # must reproduce that scale here; F.embedding alone is raw (norm ~1.6 vs the
+        # trained ~85), which collapses the draft to noise (loss~=log V, acc~=0).
+        embed_scale = torch.tensor(
+            self.backbone_hidden_size ** 0.5, dtype=target_embed_weight.dtype
+        )
         for k in range(self.K):
             # --- build inputs_embeds = concat[target_embed(cur_token), prev_hidden] ---
-            tok_emb = F.embedding(cur_token, target_embed_weight)  # (B,T,2816) raw scaled
+            tok_emb = F.embedding(cur_token, target_embed_weight) * embed_scale  # (B,T,2816) scaled
             inputs_embeds = torch.cat([tok_emb, prev_hidden], dim=-1)  # (B,T,5632)
 
             # --- assistant forward (delegates to HF; parity-verified) ---
