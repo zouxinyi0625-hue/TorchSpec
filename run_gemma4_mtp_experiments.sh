@@ -25,8 +25,12 @@ FULL_TRAIN="$MNT/mtp_26b/split/train_maiprofile_26b.jsonl"
 FULL_EVAL="$MNT/mtp_26b/split/eval_maiprofile_26b.jsonl"
 
 # layer1_delta filtered files (produced by tools/gemma4_mtp/filter_layer.py).
-L1_TRAIN="../data/train_layer1_delta.jsonl"
-L1_EVAL="../data/eval_layer1_delta_1000.jsonl"
+# Absolute paths (resolved from this script's dir = TorchSpec root) so the
+# existence check and the train_entry override use the SAME base — avoids the
+# shell-CWD vs config-dir relative-path mismatch. Files live in ./data/.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+L1_TRAIN="$SCRIPT_DIR/data/train_layer1_delta.jsonl"
+L1_EVAL="$SCRIPT_DIR/data/eval_layer1_delta_1000.jsonl"
 
 CONFIG="configs/hf_gemma4_mtp.yaml"
 # Shared overrides applied to BOTH experiments (kept here so experiment params
