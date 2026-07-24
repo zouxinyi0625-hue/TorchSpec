@@ -26,6 +26,24 @@
    `create_attention_masks` is already causal per query position, so training
    can batch all T positions in one assistant forward WITHOUT a custom mask.
 
+### Label alignment — settled empirically (`probe_label_alignment.py`)
+
+parity only validated draft forward NUMERICS, not the hand-written label
+alignment in the training wrapper. Measured, not argued: run the untrained draft
+faithfully per position (get_candidates step 0) and check top-1 agreement with
+target greedy next token.
+
+| Hypothesis | supervising hidden | agreement |
+|-----------|--------------------|-----------|
+| H0 shift=0 (correct) | `target_hidden[t]` → token_{t+1} | **0.583** |
+| H1 shift=1 (old bug) | `target_hidden[t+1]` → token_{t+2} | 0.042 |
+
+Conclusion: draft at anchor t, fed `(token_t, target_hidden[t])`, predicts
+token_{t+1}. So drafting step k supervises against `target_hidden[t+k]` (shift
+k) with label token at `t+k+1`. The earlier shift=k+1 on the hidden was an
+off-by-one that crushed accept to ~0.09; fixed in commit 984abe3. Step-0 accept
+0.583 for a 1024-dim/4-layer draft is a healthy zero-train baseline.
+
 ---
 
 ## The ground-truth inference contract (from HF source)
