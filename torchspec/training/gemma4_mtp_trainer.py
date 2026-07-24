@@ -191,6 +191,17 @@ class Gemma4MTPTrainer(DFlashTrainer):
         self.lr_scheduler = self.optimizer.lr_scheduler
 
         checkpoint_payload = checkpoint.load(self)
+        # finalize_load issues a bare dist.barrier() on the default NCCL process
+        # group. DFlash/Eagle3 reach the same barrier only AFTER broadcasting
+        # target_lm_head on the default group, which lazily initializes the
+        # group's NCCL communicator on the correct per-rank device. Our target
+        # weights load purely locally, so this barrier would be the default
+        # group's first collective — and lazy-init under a mis-guessed device
+        # makes every rank land on cuda:0 and hang. Prime the communicator with a
+        # tiny broadcast on this actor's own device first.
+        torch.cuda.set_device(torch.cuda.current_device())
+        _warmup = torch.zeros(1, device="cuda")
+        dist.broadcast(_warmup, src=0)
         checkpoint.finalize_load(self, checkpoint_payload)
 
         self._init_target_weights(target_model_path)
@@ -261,3 +272,24 @@ class Gemma4MTPTrainer(DFlashTrainer):
     def _backward(self, loss: torch.Tensor, accumulation_steps: int = 1) -> torch.Tensor:
         (loss / accumulation_steps).backward()
         return loss
+
+    def _aggregate_metrics(
+        self, all_step_metrics: list[dict], step: int, *, grad_norm: torch.Tensor = None
+    ) -> dict:
+        # Reuse DFlash's aggregation (identical per-position contract), then log
+        # the per-step accept/loss breakdown to the console on early steps so the
+        # step-0 accept curve is visible without opening wandb.
+        metrics = super()._aggregate_metrics(all_step_metrics, step, grad_norm=grad_norm)
+        if dist.get_rank() == 0 and (step <= 5 or step % 50 == 0):
+            n = self.mtp_num_steps
+            accs = [metrics.get(f"train/acc_{i}") for i in range(n)]
+            losses = [metrics.get(f"train/ploss_{i}") for i in range(n)]
+            acc_str = ", ".join(f"{a:.3f}" if a is not None else "—" for a in accs)
+            loss_str = ", ".join(f"{l:.3f}" if l is not None else "—" for l in losses)
+            logger.info(
+                f"[MTP step {step}] avg_loss={metrics.get('train/avg_loss', 0):.4f} "
+                f"avg_acc={metrics.get('train/avg_acc', 0):.4f} "
+                f"sim_acc_len={metrics.get('train/simulated_acc_len', 0):.2f} | "
+                f"acc_per_step=[{acc_str}] loss_per_step=[{loss_str}]"
+            )
+        return metrics
