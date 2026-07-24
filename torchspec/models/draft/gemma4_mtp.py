@@ -148,10 +148,22 @@ class Gemma4MTPDraftModel(PreTrainedModel):
 
         self.assistant = self._build_hf_assistant(config)
 
-        # Convenience references (parameters live inside self.assistant).
-        self.pre_projection = self.assistant.pre_projection
-        self.post_projection = self.assistant.post_projection
-        self.lm_head = self.assistant.lm_head
+    # Convenience accessors — these are *properties*, not registered submodules,
+    # so the underlying parameters live under a single name (self.assistant.*)
+    # in state_dict. Registering them as module attributes (self.pre_projection
+    # = self.assistant.pre_projection) creates aliases that break strict
+    # load_state_dict (Missing key(s): draft_model.pre_projection.weight ...).
+    @property
+    def pre_projection(self) -> nn.Module:
+        return self.assistant.pre_projection
+
+    @property
+    def post_projection(self) -> nn.Module:
+        return self.assistant.post_projection
+
+    @property
+    def lm_head(self) -> nn.Module:
+        return self.assistant.lm_head
 
     # ------------------------------------------------------------------ build
     @staticmethod
