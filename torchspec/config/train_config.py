@@ -162,6 +162,11 @@ class TrainingConfig:
     dspark_l1_loss_alpha: float = 0.9
     dspark_confidence_head_alpha: float = 1.0
 
+    # Gemma4 MTP-specific parameters (used by Gemma4MTPTrainer only)
+    gemma4_mtp_num_steps: int = 4
+    gemma4_mtp_loss_decay_gamma: float = 7.0
+    gemma4_mtp_teacher_force: bool = True
+
 
 @dataclass
 class DecodeConfig:

@@ -1,0 +1,80 @@
+# Gemma4 MTP training config (HF backend)
+#
+# Trains the Gemma4 assistant (MTP draft) against a Gemma4 target, streaming the
+# target's last_hidden + shared_kv over Mooncake (option A, faithful to Google's
+# assistant contract — see docs/gemma4_mtp/design.md).
+#
+# GPU allocation (adjust to your node):
+#   - inference: Gemma4 target (MoE) — size inference_num_gpus to fit the target
+#   - training:  Gemma4 assistant (small, 4-layer) sharded via FSDP2
+#
+# Usage:
+#   python -m torchspec.train_entry --config configs/hf_gemma4_mtp.yaml \
+#     dataset.train_data_path=/path/to/data.jsonl output_dir=./outputs/gemma4-mtp
+
+model:
+  target_model_path: /tmp/models/gemma4/text_only
+  trust_remote_code: true
+  draft_model_config: configs/draft_models/gemma4_mtp.json
+
+dataset:
+  train_data_path: ../examples/data/sample_conversations.jsonl
+  eval_data_path: null
+  chat_template: gemma          # adjust to the Gemma4 chat template name in your build
+  prompt_key: conversations
+  min_loss_tokens: 32
+
+training:
+  attention_backend: flex_attention
+  micro_batch_size: 1
+  draft_accumulation_steps: 2
+  learning_rate: 1e-4
+  min_lr: 1e-5
+  weight_decay: 0.01
+  max_concurrent_batches: 1
+  max_grad_norm: 1.0
+  max_seq_length: 2048
+  num_epochs: 3
+  seed: 42
+  training_num_gpus_per_node: 4
+  training_num_nodes: 1
+  fsdp_strategy: FULL_SHARD
+  fsdp_reduce_dtype: bfloat16
+  prefetch_depth: 4
+  save_interval: 1000
+  save_per_epoch: true
+  max_checkpoints: 2
+  warmup_ratio: 0.04
+
+  # Gemma4 MTP-specific parameters
+  gemma4_mtp_num_steps: 4          # K: future tokens drafted per position
+  gemma4_mtp_loss_decay_gamma: 7.0 # exp(-k/gamma) step weighting
+  gemma4_mtp_teacher_force: true   # D2: teacher-force GT token on steps k>0
+
+inference:
+  inference_engine_type: hf
+  mtp_mode: true                   # <-- switches to Gemma4 MTP data contract
+  store_last_hidden_states: false
+  inference_num_gpus: 4
+  inference_num_gpus_per_engine: 4 # size to fit the MoE target (TP)
+  inference_num_gpus_per_node: 4
+  max_sample_pool_size: 32
+  inference_buffer_threshold: 16
+  inference_batch_size: 2
+
+mooncake:
+  master_server_address: null
+  metadata_server: null
+  protocol: tcp
+  # KV is heavy (~T*8KB/sample KV + T*5.6KB last_hidden). Bump these if
+  # batch_put_from fails (design D1/G4).
+  global_segment_size: 32GB
+  local_buffer_size: 8GB
+  enable_hard_pin: true
+
+output_dir: ./outputs/gemma4-mtp
+cache_dir: ./cache/gemma4-mtp
+model_download_dir: null
+
+debug:
+  save_debug_train_data: null

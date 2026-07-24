@@ -156,6 +156,10 @@ class InferenceConfig:
     last_hidden_states_prenorm: Optional[bool] = None
     max_sample_pool_size: int = 0
     store_last_hidden_states: bool = True
+    # When True, use the Gemma4 MTP data contract (last_hidden + shared_kv)
+    # instead of Eagle3 aux hidden states. Requires a Gemma4 target + the
+    # gemma4_mtp draft config.
+    mtp_mode: bool = False
     offline: OfflineTrainingConfig = field(default_factory=OfflineTrainingConfig)
     sglang: SGLangConfig = field(default_factory=SGLangConfig)
     vllm: VllmConfig = field(default_factory=VllmConfig)

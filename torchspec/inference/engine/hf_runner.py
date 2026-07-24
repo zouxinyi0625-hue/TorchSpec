@@ -116,6 +116,7 @@ class HFRunner:
         aux_hidden_states_layers: Optional[list[int]] = None,
         mooncake_config: Optional[MooncakeConfig] = None,
         mooncake_store: Optional[EagleMooncakeStore] = None,
+        mtp_mode: bool = False,
         **kwargs,
     ) -> "HFRunner":
         """Create HFRunner from a pretrained model path.
@@ -146,6 +147,7 @@ class HFRunner:
             trust_remote_code=trust_remote_code,
             aux_hidden_states_layers=aux_hidden_states_layers,
             mooncake_config=mooncake_config,
+            mtp_mode=mtp_mode,
         )
 
         engine = cls(config=config, mooncake_store=mooncake_store)
