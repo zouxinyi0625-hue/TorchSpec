@@ -8,13 +8,23 @@
 | # | Component | File (to create/edit) | Depends on | Status |
 |---|-----------|----------------------|------------|--------|
 | 1 | Draft config | `configs/draft_models/gemma4_mtp.json` | — | ✅ done |
-| 2 | Draft model wrapper (wraps HF `Gemma4AssistantForCausalLM`) | `torchspec/models/draft/gemma4_mtp.py` | probes | ⏳ after review |
-| 3 | Training wrapper (TTT-style MTP unroll + loss) | `torchspec/models/gemma4_mtp.py` | #2 | ⏳ |
-| 4 | Trainer | `torchspec/training/gemma4_mtp_trainer.py` | #2,#3 | ⏳ |
-| 5 | Target extractor: last hidden + shared_kv per layer_type | `torchspec/models/target/gemma4_mtp_target.py` | — | ⏳ |
+| 2 | Draft model wrapper (wraps HF `Gemma4AssistantForCausalLM`) | `torchspec/models/draft/gemma4_mtp.py` | probes | ✅ done (parity fp32 diff==0) |
+| 3 | Training wrapper (TTT-style MTP unroll + loss) | `torchspec/models/gemma4_mtp.py` | #2 | ✅ done |
+| 4 | Trainer | `torchspec/training/gemma4_mtp_trainer.py` | #2,#3 | ⏳ next |
+| 5 | Target extractor: last hidden + shared_kv per layer_type | `torchspec/models/target/gemma4_mtp_target.py` | — | ⏳ next |
 | 6 | Mooncake schema: carry shared_kv tensors | extend `eagle_store.py` (or a `gemma4_mtp_store.py`) | #5 | ⏳ |
-| 7 | Registration (config→model, config→trainer) | `auto.py`, `trainer_actor.py` | #2,#4 | ⏳ |
-| 8 | Parity test vs HF assistant (bit-align) | `tools/gemma4_mtp/verify_parity.py` | #2,#3 | ⏳ |
+| 7 | Registration (config→model, config→trainer) | `auto.py`, `trainer_actor.py` | #2,#4 | 🟡 model done; trainer dispatch pending #4 |
+| 8 | Parity test vs HF assistant (bit-align) | `tools/gemma4_mtp/verify_parity.py` | #2,#3 | ✅ done (fp32 diff==0) |
+
+### Consistency cruxes — all three now cleared ✅
+
+1. **Forward parity**: fp32 `verify_parity.py` → logits & last_hidden diff==0.
+2. **prev_hidden recurrence**: training feeds the draft's own post_projection
+   output on step k>0 (invariant 3), matching inference.
+3. **No future-KV leak when batching T positions**: `probe_train_mask.py` →
+   parallel forward == per-position single forward (fp32 diff ~1e-5). The HF
+   `create_attention_masks` is already causal per query position, so training
+   can batch all T positions in one assistant forward WITHOUT a custom mask.
 
 ---
 
