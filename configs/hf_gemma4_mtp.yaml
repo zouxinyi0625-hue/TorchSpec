@@ -40,7 +40,8 @@ training:
   seed: 42
   training_num_gpus_per_node: 7
   training_num_nodes: 1
-  fsdp_strategy: FULL_SHARD
+  fsdp_strategy: REPLICATE       # 419M draft fits per-GPU; replicate (DDP-style)
+                                 # avoids needless all-gather of FULL_SHARD.
   fsdp_reduce_dtype: bfloat16
   prefetch_depth: 4
   save_interval: 1000
