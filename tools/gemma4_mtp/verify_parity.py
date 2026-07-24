@@ -29,11 +29,16 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 def build_inputs(target_path, assistant_path, seq_text, device, dtype):
     """Produce a realistic (inputs_embeds, position_ids, shared_kv_states) triple
-    straight from the target model, exactly as the HF candidate generator does."""
+    straight from the target model, exactly as the HF candidate generator does.
+
+    The target (a 30-layer MoE) is ALWAYS loaded in bf16 to fit memory — it is
+    only used to synthesise inputs. The produced tensors are then cast to
+    ``dtype`` so the two (tiny) assistants can be compared in fp32/bf16.
+    """
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     target = AutoModelForCausalLM.from_pretrained(
-        target_path, dtype=dtype, trust_remote_code=True
+        target_path, dtype=torch.bfloat16, trust_remote_code=True
     ).eval().to(device)
     tok = AutoTokenizer.from_pretrained(target_path, trust_remote_code=True)
     ids = tok(seq_text, return_tensors="pt").input_ids.to(device)
@@ -46,6 +51,12 @@ def build_inputs(target_path, assistant_path, seq_text, device, dtype):
     tok_emb = target.get_input_embeddings()(last_tok)        # raw scaled (B,1,2816)
     inputs_embeds = torch.cat([tok_emb, last_hidden], dim=-1)  # (B,1,5632)
     position_ids = torch.tensor([[ids.shape[1] - 1]], dtype=torch.long, device=device)
+
+    # Cast inputs to the comparison dtype and free the target to reclaim VRAM.
+    inputs_embeds = inputs_embeds.to(dtype)
+    shared_kv = {k: (K.to(dtype), V.to(dtype)) for k, (K, V) in shared_kv.items()}
+    del target
+    torch.cuda.empty_cache()
     return inputs_embeds, position_ids, shared_kv
 
 
