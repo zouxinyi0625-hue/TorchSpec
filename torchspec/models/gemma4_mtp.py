@@ -161,17 +161,21 @@ class Gemma4MTPModel(nn.Module):
                 attention_mask=attention_mask,
             )  # logits (B,T,V), last_hidden (B,T,2816)
 
-            # --- labels: token & target distribution at position t+k+1 ---
-            # Draft at position t predicts token t+(k+1); align by shifting.
-            shift = k + 1
-            # valid where t+shift < seqlen AND loss_mask at the label position.
-            label_pos = torch.arange(seqlen, device=device) + shift
-            valid_bounds = label_pos < seqlen
-            safe_label_pos = label_pos.clamp(max=seqlen - 1)
+            # --- labels (design.md invariant alignment) ---
+            # At anchor position t, drafting step k predicts token_{t+k+1}.
+            # In the TARGET model, hidden at position (t+k) is what predicts
+            # token_{t+k+1}: target_p = softmax(lm_head(target_hidden[t+k])).
+            # So the supervising hidden uses shift=k, while the label token id
+            # (for teacher forcing + bounds) sits at t+k+1.
+            hidden_pos = torch.arange(seqlen, device=device) + k
+            token_pos = torch.arange(seqlen, device=device) + (k + 1)
+            valid_bounds = token_pos < seqlen           # label token must exist
+            safe_hidden_pos = hidden_pos.clamp(max=seqlen - 1)
+            safe_token_pos = token_pos.clamp(max=seqlen - 1)
 
-            label_token = input_ids[:, safe_label_pos]  # (B,T) ground-truth next
-            label_hidden = target_last_hidden[:, safe_label_pos, :]  # (B,T,2816)
-            label_lossmask = loss_mask[:, safe_label_pos]  # (B,T)
+            label_token = input_ids[:, safe_token_pos]          # (B,T) ground-truth next
+            label_hidden = target_last_hidden[:, safe_hidden_pos, :]  # (B,T,2816)
+            label_lossmask = loss_mask[:, safe_token_pos]       # (B,T)
 
             step_mask = (
                 valid_bounds.unsqueeze(0).float()
@@ -220,7 +224,7 @@ class Gemma4MTPModel(nn.Module):
             prev_hidden = last_hidden  # own output fed back (invariant 3)
             if self.teacher_force:
                 # feed ground-truth token t+k+1 (D2 default)
-                cur_token = input_ids[:, safe_label_pos].clamp(0, V - 1)
+                cur_token = input_ids[:, safe_token_pos].clamp(0, V - 1)
             else:
                 # free-run: draft's own argmax (matches inference exactly)
                 cur_token = logits.argmax(-1).clamp(0, V - 1)
