@@ -61,7 +61,8 @@ def main() -> None:
     ap.add_argument("--num-samples", type=int, default=200)
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--temperature", type=float, default=0.7)
-    ap.add_argument("--max-new", type=int, default=128)
+    ap.add_argument("--top-p", type=float, default=0.95)
+    ap.add_argument("--max-new", type=int, default=256)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max-len", type=int, default=4096)
     ap.add_argument("--device", default="cuda:0")
@@ -100,10 +101,25 @@ def main() -> None:
             if isinstance(p, str) and p:
                 prompts.append(p)
     print(f"loaded {len(prompts)} prompts from {args.sc1.split('/')[-1]}  "
-          f"k={args.k} temp={args.temperature} max_new={args.max_new}")
+          f"k={args.k} temp={args.temperature} top_p={args.top_p} max_new={args.max_new}")
 
     temp = max(args.temperature, 1e-6)
     greedy = args.temperature == 0.0
+    top_p = args.top_p
+
+    def probs_from_logits(logits):
+        """Temperature + top_p, matching vLLM's apply_sampling_constraints.
+        logits: (1, V) -> probs: (1, V) with mass outside top_p nucleus zeroed."""
+        p = F.softmax(logits / temp, dim=-1)
+        if top_p is not None and top_p < 1.0:
+            sp, idx = torch.sort(p, descending=True, dim=-1)
+            csum = sp.cumsum(dim=-1)
+            # keep tokens up to and including the one crossing top_p
+            mask = csum - sp > top_p
+            sp = sp.masked_fill(mask, 0.0)
+            p = torch.zeros_like(p).scatter_(-1, idx, sp)
+            p = p / p.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+        return p
 
     def target_forward(full_ids):
         with torch.no_grad():
@@ -134,7 +150,10 @@ def main() -> None:
                     out = draft(inputs_embeds=inp, position_ids=pos, shared_kv_states=shared_kv)
                 dl = out.logits[:, -1, :]
                 draft_logits_list.append(dl)
-                nt = dl.argmax(-1, keepdim=True) if greedy else torch.multinomial(F.softmax(dl/temp, -1), 1)
+                if greedy:
+                    nt = dl.argmax(-1, keepdim=True)
+                else:
+                    nt = torch.multinomial(probs_from_logits(dl), 1)
                 draft_tokens.append(nt)
                 prev_hidden = out.last_hidden_state[:, -1:, :]
                 last_tok = nt
@@ -151,8 +170,8 @@ def main() -> None:
                 if greedy:
                     acc = (tl.argmax(-1).item() == dtok)
                 else:
-                    pt = F.softmax(tl/temp, -1)[0, dtok].item()
-                    pd = F.softmax(draft_logits_list[i]/temp, -1)[0, dtok].item()
+                    pt = probs_from_logits(tl)[0, dtok].item()
+                    pd = probs_from_logits(draft_logits_list[i])[0, dtok].item()
                     acc = (torch.rand(1).item() < min(1.0, pt/max(pd, 1e-12)))
                 if acc:
                     accept_hits[i] += 1
@@ -161,7 +180,7 @@ def main() -> None:
                     break
             corr_h = vh[:, L - 1 + min(n_acc, args.k - 1), :]
             corr_l = tl_from_h(corr_h)
-            corr = corr_l.argmax(-1, keepdim=True) if greedy else torch.multinomial(F.softmax(corr_l/temp, -1), 1)
+            corr = corr_l.argmax(-1, keepdim=True) if greedy else torch.multinomial(probs_from_logits(corr_l), 1)
             cur = torch.cat([verify_ids[:, : L + n_acc], corr], dim=1)
             generated += n_acc + 1
             if corr.item() == tok.eos_token_id:
