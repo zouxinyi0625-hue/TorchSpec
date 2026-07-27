@@ -107,9 +107,14 @@ def main() -> None:
     # out.last_hidden_state is that same tensor AFTER model.norm (POST-norm).
     with torch.no_grad():
         out = model(ids, output_hidden_states=True, use_cache=False)
+        # Training uses the BACKBONE's last_hidden_state (gemma4_mtp_target.py:175
+        # calls the Gemma4 target which returns out.last_hidden_state from the
+        # text backbone). AutoModelForCausalLM output lacks it, so call the
+        # backbone directly to get the exact tensor training consumed.
+        bb_out = backbone(ids, output_hidden_states=True, use_cache=False)
 
-    last_layer_hs = out.hidden_states[-1]            # last entry of hidden_states tuple
-    lhs = out.last_hidden_state                      # what training used (gemma4_mtp_target.py:175)
+    last_layer_hs = out.hidden_states[-1]            # last entry of CausalLM hidden_states tuple
+    lhs = bb_out.last_hidden_state                   # what training fed (backbone last_hidden_state)
     post_of_lastlayer = final_norm(last_layer_hs)    # explicitly norm the last-layer output
 
     # Per-token L2 norm across hidden dim, averaged over tokens.
