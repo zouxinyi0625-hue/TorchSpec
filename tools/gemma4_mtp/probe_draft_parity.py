@@ -61,6 +61,7 @@ def main() -> None:
     ap.add_argument("--assistant", required=True, help="Trained draft (HF assistant) dir")
     ap.add_argument("--data", required=True)
     ap.add_argument("--max-len", type=int, default=2048)
+    ap.add_argument("--num-prompts", type=int, default=10)
     ap.add_argument("--device", default="cuda:0")
     args = ap.parse_args()
 
@@ -88,80 +89,82 @@ def main() -> None:
     backbone_hidden = target_embed.shape[1]
     embed_scale = torch.tensor(backbone_hidden ** 0.5, dtype=target_embed.dtype, device=dev)
 
-    # Build one real prompt.
+    # Loop over N prompts, accumulate agreement over all supervised positions.
     with open(args.data, encoding="utf-8") as f:
-        rec = json.loads(f.readline())
-    convs = rec["conversations"]
-    sys_c = next((t["content"] for t in convs if t["role"] == "system"), "")
-    usr_c = next((t["content"] for t in convs if t["role"] == "user"), "")
-    text = (sys_c + "\n\n" + usr_c) if sys_c else usr_c
-    ids = tok(text, return_tensors="pt", truncation=True, max_length=args.max_len).input_ids.to(dev)
-    B, T = ids.shape
-    print(f"prompt tokens: {T}", flush=True)
+        lines = [f.readline() for _ in range(args.num_prompts)]
 
-    # Target forward -> last_hidden (what training fed as prev_hidden) + shared_kv.
-    with torch.no_grad():
-        bb_out = backbone(ids, use_cache=True, return_shared_kv_states=True,
-                          output_hidden_states=False)
-        target_last_hidden = bb_out.last_hidden_state             # (B, T, 2816)
-        shared_kv = bb_out.shared_kv_states
+    tgt_lm_head = target_embed  # tied lm_head == embed table for Gemma4
+    tot_match = 0
+    tot_tok = 0
+    tot_match_s1 = 0
+    tot_tok_s1 = 0
+    per_prompt = []
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        convs = rec["conversations"]
+        sys_c = next((t["content"] for t in convs if t["role"] == "system"), "")
+        usr_c = next((t["content"] for t in convs if t["role"] == "user"), "")
+        text = (sys_c + "\n\n" + usr_c) if sys_c else usr_c
+        ids = tok(text, return_tensors="pt", truncation=True, max_length=args.max_len).input_ids.to(dev)
+        B, T = ids.shape
 
-    if shared_kv is None:
-        raise SystemExit("target did not return shared_kv_states; check return_shared_kv_states support")
+        with torch.no_grad():
+            bb_out = backbone(ids, use_cache=True, return_shared_kv_states=True,
+                              output_hidden_states=False)
+            target_last_hidden = bb_out.last_hidden_state
+            shared_kv = bb_out.shared_kv_states
+            if shared_kv is None:
+                raise SystemExit("target did not return shared_kv_states")
 
-    # Reproduce the training step-0 draft input EXACTLY (gemma4_mtp.py:139-162).
-    # prev_hidden = target_last_hidden ; cur_token = input_ids[t].
-    cur_token = ids.clamp(0, target_embed.shape[0] - 1)
-    tok_embed = F.embedding(cur_token, target_embed) * embed_scale     # (B, T, 2816), scaled
-    inputs_embeds = torch.cat([tok_embed, target_last_hidden], dim=-1)  # (B, T, 5632)
-    position_ids = torch.arange(T, device=dev).unsqueeze(0).expand(B, -1)
+            cur_token = ids.clamp(0, target_embed.shape[0] - 1)
+            tok_embed = F.embedding(cur_token, target_embed) * embed_scale
+            inputs_embeds = torch.cat([tok_embed, target_last_hidden], dim=-1)
+            position_ids = torch.arange(T, device=dev).unsqueeze(0).expand(B, -1)
 
-    print("norms: tok_embed(scaled)={:.2f}  prev_hidden={:.2f}  concat={:.2f}".format(
-        tok_embed[0].float().norm(dim=-1).mean().item(),
-        target_last_hidden[0].float().norm(dim=-1).mean().item(),
-        inputs_embeds[0].float().norm(dim=-1).mean().item(),
-    ), flush=True)
+            out = draft(inputs_embeds=inputs_embeds, position_ids=position_ids,
+                        shared_kv_states=shared_kv)
+            draft_greedy = out.logits.argmax(-1)                          # (B, T)
+            target_pred = (target_last_hidden.float() @ tgt_lm_head.float().T).argmax(-1)  # (B, T)
 
-    with torch.no_grad():
-        out = draft(
-            inputs_embeds=inputs_embeds,
-            position_ids=position_ids,
-            shared_kv_states=shared_kv,
-        )
-    draft_logits = out.logits                                    # (B, T, V)
-    draft_greedy = draft_logits.argmax(-1)                       # (B, T)
+        m = (draft_greedy == target_pred).sum().item()
+        n = draft_greedy.numel()
+        tot_match += m
+        tot_tok += n
+        ms1 = (draft_greedy[:, :-1] == target_pred[:, 1:]).sum().item()
+        ns1 = draft_greedy[:, :-1].numel()
+        tot_match_s1 += ms1
+        tot_tok_s1 += ns1
+        per_prompt.append(m / max(n, 1))
+        if i == 0:
+            print("norms(row0): tok_embed(scaled)={:.2f} prev_hidden={:.2f} concat={:.2f}".format(
+                tok_embed[0].float().norm(dim=-1).mean().item(),
+                target_last_hidden[0].float().norm(dim=-1).mean().item(),
+                inputs_embeds[0].float().norm(dim=-1).mean().item()), flush=True)
 
-    # EXACT training acc alignment (gemma4_mtp.py:175-207):
-    #   step-0 target_p = softmax(target_lm_head(target_last_hidden[t]))  -- SAME position t,
-    #   NOT the CausalLM greedy and NOT shift+1. The draft at t is scored against the
-    #   target's own next-token prediction derived from target_hidden[t].
-    tgt_lm_head = backbone.embed_tokens.weight   # tied lm_head == embed table for Gemma4
-    with torch.no_grad():
-        # target_p argmax over vocab from target_last_hidden[t] @ lm_head^T
-        target_from_hidden = (target_last_hidden.float() @ tgt_lm_head.float().T)  # (B,T,V)
-        target_pred = target_from_hidden.argmax(-1)              # (B, T)
-
-    # Same position t (no shift): draft prediction at t vs target-from-hidden at t.
-    agree = (draft_greedy == target_pred).float().mean().item()
-
-    # Sanity: also report the shifted variants to expose an off-by-one immediately.
-    agree_shift1 = (draft_greedy[:, :-1] == target_pred[:, 1:]).float().mean().item()
+    agree = tot_match / max(tot_tok, 1)
+    agree_shift1 = tot_match_s1 / max(tot_tok_s1, 1)
+    import statistics
+    lo, hi = min(per_prompt), max(per_prompt)
+    std = statistics.pstdev(per_prompt) if len(per_prompt) > 1 else 0.0
 
     print("\n================= DRAFT PARITY PROBE (step-0) =================")
-    print(f"pos0 top-1 agreement (draft argmax == target-from-hidden argmax, SAME pos): {agree:.4f}")
-    print(f"  [sanity] shift+1 variant (should be LOWER if same-pos is right):          {agree_shift1:.4f}")
+    print(f"prompts: {len(per_prompt)}   total supervised tokens: {tot_tok}")
+    print(f"SAME-pos agreement (draft argmax == target-from-hidden argmax): {agree:.4f}")
+    print(f"  per-prompt: mean={sum(per_prompt)/len(per_prompt):.4f} min={lo:.4f} max={hi:.4f} std={std:.4f}")
+    print(f"  [sanity] shift+1 variant (should be much LOWER):              {agree_shift1:.4f}")
     print("-------------------------------------------------------------")
     if agree > 0.7:
-        print("VERDICT: draft is SELF-CONSISTENT on the training path (~training eval).")
-        print("  => The deployment gap is in WHAT vLLM FEEDS the draft, not the draft")
-        print("     or its forward. Next: dump vLLM's real target_hidden/shared_kv for")
-        print("     the SAME prompt and diff against these (norms + argmax).")
+        print("VERDICT: draft SELF-CONSISTENT above the ~0.58 self-agreement ceiling.")
+        print("  => gap is in WHAT vLLM feeds; next: dump vLLM real target_hidden/shared_kv.")
     elif agree < 0.55:
-        print("VERDICT: draft is NOT self-consistent even on the training path.")
-        print("  => 'training eval 0.91' is a different-harness artifact (teacher-force +")
-        print("     cached hidden). Audit the training eval metric / label alignment.")
+        print("VERDICT: draft NOT self-consistent on training path -> audit training eval metric.")
     else:
-        print("VERDICT: intermediate — re-run on more prompts; check label shift (k vs k+1).")
+        print("VERDICT: ~0.55-0.60 = AT the target self-agreement ceiling. Draft is trained")
+        print("  to the ceiling on POST-norm hidden. The deploy gap (0.43) means vLLM feeds")
+        print("  a DIFFERENT hidden than this post-norm one. Next: dump vLLM's real draft")
+        print("  input for the same prompt and diff (norm + argmax) against target_last_hidden.")
     print("=============================================================")
 
 
