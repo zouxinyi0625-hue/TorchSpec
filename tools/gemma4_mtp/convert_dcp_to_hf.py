@@ -32,7 +32,6 @@ import os
 
 import torch
 import torch.distributed.checkpoint as dcp
-from torch.distributed.checkpoint.state_dict_loader import _load_state_dict
 from torch.distributed.checkpoint import FileSystemReader
 
 
@@ -43,17 +42,26 @@ def load_dcp_model_state(model_dir: str) -> dict:
     """Load the DCP-sharded model state into a flat {key: tensor} dict on CPU.
 
     The saved structure is {"model_state": {"model": <flat state_dict>}}.
-    We provide an empty template and let DCP fill tensors in-place.
+    DCP loads in-place, so each template tensor MUST already have the saved
+    shape/dtype (an empty tensor triggers a size-mismatch). We read those from
+    the checkpoint metadata (TensorStorageMetadata carries .size and
+    .properties.dtype) and pre-allocate matching zero tensors.
     """
     reader = FileSystemReader(model_dir)
-    # Read metadata to discover the exact keys stored in the checkpoint.
     metadata = reader.read_metadata()
-    stored_keys = list(metadata.state_dict_metadata.keys())
+    sd_meta = metadata.state_dict_metadata
 
-    # Build an empty state_dict template matching the stored (possibly nested)
-    # keys so dcp.load knows what to materialize. DCP flattens nested dicts
-    # with "." — keys look like "model_state.model.draft_model.assistant.xxx".
-    template = {k: torch.empty(0) for k in stored_keys}
+    template = {}
+    stored_keys = []
+    for k, m in sd_meta.items():
+        size = getattr(m, "size", None)
+        if size is None:
+            # Non-tensor entry (e.g. bytes/metadata) — skip; not a weight.
+            continue
+        dtype = getattr(getattr(m, "properties", None), "dtype", torch.float32)
+        template[k] = torch.empty(tuple(size), dtype=dtype)
+        stored_keys.append(k)
+
     dcp.load(template, checkpoint_id=model_dir)
     return template, stored_keys
 
