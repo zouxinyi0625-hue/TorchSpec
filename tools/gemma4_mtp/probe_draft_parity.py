@@ -155,16 +155,19 @@ def main() -> None:
     print(f"  per-prompt: mean={sum(per_prompt)/len(per_prompt):.4f} min={lo:.4f} max={hi:.4f} std={std:.4f}")
     print(f"  [sanity] shift+1 variant (should be much LOWER):              {agree_shift1:.4f}")
     print("-------------------------------------------------------------")
-    if agree > 0.7:
-        print("VERDICT: draft SELF-CONSISTENT above the ~0.58 self-agreement ceiling.")
-        print("  => gap is in WHAT vLLM feeds; next: dump vLLM real target_hidden/shared_kv.")
-    elif agree < 0.55:
-        print("VERDICT: draft NOT self-consistent on training path -> audit training eval metric.")
+    print("Reference: TRAINING eval reached ~0.91 on this data. This probe should")
+    print("reproduce that if it feeds the draft EXACTLY what training did.")
+    if agree >= 0.85:
+        print("VERDICT: probe ~= training eval -> probe is faithful; draft is good.")
+        print("  => gap is purely in what vLLM feeds at deploy. Next: dump vLLM's real")
+        print("     target_hidden/shared_kv for the same prompt and diff vs this.")
     else:
-        print("VERDICT: ~0.55-0.60 = AT the target self-agreement ceiling. Draft is trained")
-        print("  to the ceiling on POST-norm hidden. The deploy gap (0.43) means vLLM feeds")
-        print("  a DIFFERENT hidden than this post-norm one. Next: dump vLLM's real draft")
-        print("  input for the same prompt and diff (norm + argmax) against target_last_hidden.")
+        print(f"VERDICT: probe agreement ({agree:.3f}) is BELOW training eval (~0.91).")
+        print("  => this probe does NOT yet reproduce the training input faithfully")
+        print("     (candidates: shared_kv layout, seq truncation, single-step vs the")
+        print("     full K-step unroll, or a collator detail). The draft itself is fine")
+        print("     (training eval 0.91 is trusted). Align the probe to training FIRST,")
+        print("     then compare against vLLM's real draft input.")
     print("=============================================================")
 
 
