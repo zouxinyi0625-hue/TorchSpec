@@ -99,14 +99,12 @@ def main() -> None:
     B, T = ids.shape
     print(f"prompt tokens: {T}", flush=True)
 
-    # Target forward -> last_hidden (what training fed as prev_hidden) + shared_kv + greedy.
+    # Target forward -> last_hidden (what training fed as prev_hidden) + shared_kv.
     with torch.no_grad():
         bb_out = backbone(ids, use_cache=True, return_shared_kv_states=True,
                           output_hidden_states=False)
         target_last_hidden = bb_out.last_hidden_state             # (B, T, 2816)
         shared_kv = bb_out.shared_kv_states
-        tgt_logits = target(ids, use_cache=False).logits          # (B, T, V)
-        target_greedy = tgt_logits.argmax(-1)                     # (B, T)
 
     if shared_kv is None:
         raise SystemExit("target did not return shared_kv_states; check return_shared_kv_states support")
@@ -133,15 +131,25 @@ def main() -> None:
     draft_logits = out.logits                                    # (B, T, V)
     draft_greedy = draft_logits.argmax(-1)                       # (B, T)
 
-    # Step-0 label alignment (gemma4_mtp.py: step k supervises target_greedy[t+k+1]).
-    # For pos0 (k=0): draft prediction at t should match target_greedy at t+1.
-    dr = draft_greedy[:, :-1]          # prediction made at position t
-    tg = target_greedy[:, 1:]          # target's greedy next token
-    # Only score supervised (non-pad) positions; here all real tokens.
-    agree = (dr == tg).float().mean().item()
+    # EXACT training acc alignment (gemma4_mtp.py:175-207):
+    #   step-0 target_p = softmax(target_lm_head(target_last_hidden[t]))  -- SAME position t,
+    #   NOT the CausalLM greedy and NOT shift+1. The draft at t is scored against the
+    #   target's own next-token prediction derived from target_hidden[t].
+    tgt_lm_head = backbone.embed_tokens.weight   # tied lm_head == embed table for Gemma4
+    with torch.no_grad():
+        # target_p argmax over vocab from target_last_hidden[t] @ lm_head^T
+        target_from_hidden = (target_last_hidden.float() @ tgt_lm_head.float().T)  # (B,T,V)
+        target_pred = target_from_hidden.argmax(-1)              # (B, T)
+
+    # Same position t (no shift): draft prediction at t vs target-from-hidden at t.
+    agree = (draft_greedy == target_pred).float().mean().item()
+
+    # Sanity: also report the shifted variants to expose an off-by-one immediately.
+    agree_shift1 = (draft_greedy[:, :-1] == target_pred[:, 1:]).float().mean().item()
 
     print("\n================= DRAFT PARITY PROBE (step-0) =================")
-    print(f"pos0 top-1 agreement (draft argmax == target greedy, shift+1): {agree:.4f}")
+    print(f"pos0 top-1 agreement (draft argmax == target-from-hidden argmax, SAME pos): {agree:.4f}")
+    print(f"  [sanity] shift+1 variant (should be LOWER if same-pos is right):          {agree_shift1:.4f}")
     print("-------------------------------------------------------------")
     if agree > 0.7:
         print("VERDICT: draft is SELF-CONSISTENT on the training path (~training eval).")
