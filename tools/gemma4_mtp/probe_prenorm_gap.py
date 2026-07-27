@@ -58,11 +58,38 @@ def main() -> None:
         args.target, torch_dtype=torch.bfloat16, trust_remote_code=True
     ).to(args.device).eval()
 
-    # Locate the backbone + its final norm. HF Gemma4 text model exposes
-    # model.model (the decoder stack) with .norm as the final RMSNorm.
-    backbone = model.model if hasattr(model, "model") else model
-    final_norm = backbone.norm
-    print(f"final norm module: {type(final_norm).__name__}, "
+    # Locate the backbone + its final norm. HF Gemma4 nests the decoder stack;
+    # the final RMSNorm attribute isn't always `.norm` on the top module, so
+    # search for it robustly.
+    def find_backbone_and_norm(m):
+        import torch.nn as nn
+        # Walk down common nesting: model -> (language_model|model) -> ... until
+        # we find a module that has a `.norm` RMSNorm and a `.layers`.
+        candidates = [m]
+        seen = set()
+        while candidates:
+            mod = candidates.pop(0)
+            if id(mod) in seen:
+                continue
+            seen.add(id(mod))
+            has_norm = hasattr(mod, "norm") and isinstance(getattr(mod, "norm"), nn.Module)
+            has_layers = hasattr(mod, "layers")
+            if has_norm and has_layers:
+                return mod, getattr(mod, "norm")
+            for _n, child in mod.named_children():
+                candidates.append(child)
+        return None, None
+
+    backbone, final_norm = find_backbone_and_norm(model)
+    if final_norm is None:
+        # Dump structure to help pin the attribute name, then bail.
+        print("Could NOT auto-locate final norm. Top-level module tree:", flush=True)
+        for name, mod in model.named_modules():
+            if name.count(".") <= 2 and ("norm" in name.lower() or name.endswith("layers")):
+                print(f"  {name}: {type(mod).__name__}", flush=True)
+        raise SystemExit("Set the norm path manually from the tree above.")
+    print(f"backbone: {type(backbone).__name__}, "
+          f"final norm: {type(final_norm).__name__}, "
           f"weight shape {tuple(final_norm.weight.shape)}", flush=True)
 
     # Build one real prompt (system+user folded, drop assistant) from row 0.
@@ -81,30 +108,42 @@ def main() -> None:
     with torch.no_grad():
         out = model(ids, output_hidden_states=True, use_cache=False)
 
-    pre_norm = out.hidden_states[-1]                 # what vLLM feeds the draft
-    # Reproduce the post-norm the training target used: out.last_hidden_state.
-    # (Some HF versions already norm hidden_states[-1]; recompute explicitly to be safe.)
-    post_norm_recomputed = final_norm(pre_norm)      # what training fed the draft
+    last_layer_hs = out.hidden_states[-1]            # last entry of hidden_states tuple
+    lhs = out.last_hidden_state                      # what training used (gemma4_mtp_target.py:175)
+    post_of_lastlayer = final_norm(last_layer_hs)    # explicitly norm the last-layer output
 
-    # Per-token L2 norm across hidden dim, then average over tokens.
+    # Per-token L2 norm across hidden dim, averaged over tokens.
     def mean_tok_norm(x: torch.Tensor) -> float:
         return x[0].float().norm(dim=-1).mean().item()
 
-    pre_n = mean_tok_norm(pre_norm)
-    post_n = mean_tok_norm(post_norm_recomputed)
+    n_lastlayer = mean_tok_norm(last_layer_hs)
+    n_lhs = mean_tok_norm(lhs)
+    n_post = mean_tok_norm(post_of_lastlayer)
+    # Is out.last_hidden_state already normed (== post_of_lastlayer)?
+    lhs_is_normed = abs(n_lhs - n_post) / max(n_post, 1e-9) < 0.05
 
     print("\n================= PRENORM-GAP PROBE RESULT =================")
-    print(f"PRE-norm  hidden mean per-token L2 norm (vLLM feeds this):  {pre_n:8.3f}")
-    print(f"POST-norm hidden mean per-token L2 norm (training fed this): {post_n:8.3f}")
-    print(f"ratio pre/post: {pre_n / max(post_n, 1e-9):8.3f}")
+    print(f"hidden_states[-1]  (raw last-layer)          mean L2: {n_lastlayer:9.3f}")
+    print(f"out.last_hidden_state (TRAINING fed this)    mean L2: {n_lhs:9.3f}")
+    print(f"norm(hidden_states[-1]) (explicit post-norm) mean L2: {n_post:9.3f}")
     print("-----------------------------------------------------------")
-    if pre_n / max(post_n, 1e-9) > 1.5 or post_n / max(pre_n, 1e-9) > 1.5:
-        print("VERDICT: SUBSTANTIAL mismatch -> train(post-norm) vs deploy(pre-norm)")
-        print("         gap CONFIRMED. This is why vLLM accept halves.")
+    print(f"is out.last_hidden_state already norm'd? {lhs_is_normed} "
+          f"(|lhs-post|/post = {abs(n_lhs-n_post)/max(n_post,1e-9):.3f})")
+    print(f"ratio raw_lastlayer / last_hidden_state: {n_lastlayer/max(n_lhs,1e-9):9.3f}")
+    print("-----------------------------------------------------------")
+    # The deployment mismatch = (what vLLM feeds: raw pre-norm last-layer)
+    #                       vs (what training fed: out.last_hidden_state).
+    ratio = n_lastlayer / max(n_lhs, 1e-9)
+    if ratio > 1.5 or ratio < 0.667:
+        print("VERDICT: SUBSTANTIAL mismatch between raw last-layer (vLLM pre-norm)")
+        print("         and out.last_hidden_state (training). GAP CONFIRMED.")
+        print("         -> vLLM feeds un-normalized hidden; draft trained on normalized.")
         print("         Fix A: retrain with inference.last_hidden_states_prenorm=true")
-        print("         Fix B: apply model.norm to hidden_states in vLLM gemma4_mtp before pre_projection")
+        print("         Fix B: apply model.norm in vLLM gemma4_mtp before pre_projection")
     else:
-        print("VERDICT: norms are CLOSE -> prenorm/postnorm is NOT the gap. Look elsewhere.")
+        print("VERDICT: raw last-layer ~= last_hidden_state -> norm is NOT the gap.")
+        print("         (out.last_hidden_state may itself be pre-norm here.) Look elsewhere:")
+        print("         next probe = per-layer draft-forward parity HF-assistant vs vLLM.")
     print("===========================================================")
 
 
