@@ -108,13 +108,22 @@ def main() -> None:
         # locate the assistant answer span -- training only scores those tokens
         # (last_turn_loss_only). Scoring prompt/system tokens (never supervised)
         # is what dragged the naive probe down to ~0.58.
-        full_ids = tok.apply_chat_template(convs, tokenize=True, add_generation_prompt=False,
-                                           return_tensors="pt").to(dev)
-        # Prompt = everything up to (not including) the last assistant turn.
+        def _ct(messages, add_gen):
+            try:
+                r = tok.apply_chat_template(messages, tokenize=True,
+                                            add_generation_prompt=add_gen,
+                                            return_tensors="pt")
+            except Exception as e:
+                raise SystemExit(f"apply_chat_template failed: {type(e).__name__}: {e}\n"
+                                 f"  (tokenizer may lack a chat template for these roles; "
+                                 f"row roles = {[m.get('role') for m in messages]})")
+            if hasattr(r, "input_ids"):
+                r = r.input_ids
+            return r.to(dev)
+
+        full_ids = _ct(convs, False)
         convs_prompt = convs[:-1] if convs[-1]["role"] == "assistant" else convs
-        prompt_ids = tok.apply_chat_template(convs_prompt, tokenize=True,
-                                             add_generation_prompt=True,
-                                             return_tensors="pt").to(dev)
+        prompt_ids = _ct(convs_prompt, True)
         if full_ids.shape[1] > args.max_len:
             full_ids = full_ids[:, :args.max_len]
         ids = full_ids
