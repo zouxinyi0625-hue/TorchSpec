@@ -104,11 +104,28 @@ def main() -> None:
             continue
         rec = json.loads(line)
         convs = rec["conversations"]
-        sys_c = next((t["content"] for t in convs if t["role"] == "system"), "")
-        usr_c = next((t["content"] for t in convs if t["role"] == "user"), "")
-        text = (sys_c + "\n\n" + usr_c) if sys_c else usr_c
-        ids = tok(text, return_tensors="pt", truncation=True, max_length=args.max_len).input_ids.to(dev)
+        # Build the FULL chat (incl. assistant turn) via the chat template, and
+        # locate the assistant answer span -- training only scores those tokens
+        # (last_turn_loss_only). Scoring prompt/system tokens (never supervised)
+        # is what dragged the naive probe down to ~0.58.
+        full_ids = tok.apply_chat_template(convs, tokenize=True, add_generation_prompt=False,
+                                           return_tensors="pt").to(dev)
+        # Prompt = everything up to (not including) the last assistant turn.
+        convs_prompt = convs[:-1] if convs[-1]["role"] == "assistant" else convs
+        prompt_ids = tok.apply_chat_template(convs_prompt, tokenize=True,
+                                             add_generation_prompt=True,
+                                             return_tensors="pt").to(dev)
+        if full_ids.shape[1] > args.max_len:
+            full_ids = full_ids[:, :args.max_len]
+        ids = full_ids
         B, T = ids.shape
+        # Supervised mask: assistant-answer positions = [len(prompt_ids), T).
+        ans_start = min(prompt_ids.shape[1], T)
+        sup_mask = torch.zeros(T, dtype=torch.bool, device=dev)
+        sup_mask[ans_start:] = True
+        n_sup = int(sup_mask.sum().item())
+        if n_sup == 0:
+            continue
 
         with torch.no_grad():
             bb_out = backbone(ids, use_cache=True, return_shared_kv_states=True,
@@ -128,20 +145,26 @@ def main() -> None:
             draft_greedy = out.logits.argmax(-1)                          # (B, T)
             target_pred = (target_last_hidden.float() @ tgt_lm_head.float().T).argmax(-1)  # (B, T)
 
-        m = (draft_greedy == target_pred).sum().item()
-        n = draft_greedy.numel()
+        # Only score SUPERVISED (assistant-answer) positions, matching training.
+        dg = draft_greedy[0]          # (T,)
+        tp = target_pred[0]           # (T,)
+        sm = sup_mask                 # (T,)
+        m = ((dg == tp) & sm).sum().item()
+        n = int(sm.sum().item())
         tot_match += m
         tot_tok += n
-        ms1 = (draft_greedy[:, :-1] == target_pred[:, 1:]).sum().item()
-        ns1 = draft_greedy[:, :-1].numel()
+        # shift+1 sanity within supervised span
+        sm1 = sm[:-1]
+        ms1 = ((dg[:-1] == tp[1:]) & sm1).sum().item()
+        ns1 = int(sm1.sum().item())
         tot_match_s1 += ms1
         tot_tok_s1 += ns1
         per_prompt.append(m / max(n, 1))
         if i == 0:
-            print("norms(row0): tok_embed(scaled)={:.2f} prev_hidden={:.2f} concat={:.2f}".format(
+            print("norms(row0): tok_embed(scaled)={:.2f} prev_hidden={:.2f} concat={:.2f} | sup_tokens={}".format(
                 tok_embed[0].float().norm(dim=-1).mean().item(),
                 target_last_hidden[0].float().norm(dim=-1).mean().item(),
-                inputs_embeds[0].float().norm(dim=-1).mean().item()), flush=True)
+                inputs_embeds[0].float().norm(dim=-1).mean().item(), n), flush=True)
 
     agree = tot_match / max(tot_tok, 1)
     agree_shift1 = tot_match_s1 / max(tot_tok_s1, 1)
