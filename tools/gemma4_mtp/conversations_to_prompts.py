@@ -24,7 +24,14 @@ import json
 
 
 def build_prompt(conversations) -> str | None:
-    """Fold system+user turns into one prompt string; drop assistant."""
+    """Fold system+user turns into one prompt string; drop assistant.
+
+    Output format matches the reference sc1_delta_v2.jsonl exactly (verified by
+    reconstructing a real record byte-for-byte):
+        "[SYSTEM]\n" + <system> + "\n\n" + <user>
+    No [USER] marker, no trailing generation prompt. The benchmark's
+    render_chat() then wraps this whole string as a single user turn.
+    """
     system_parts = []
     user_parts = []
     for turn in conversations:
@@ -37,10 +44,10 @@ def build_prompt(conversations) -> str | None:
         # assistant / other roles: ignored (draft generates these)
     if not user_parts:
         return None  # no user turn -> nothing to prompt with
-    system_block = "\n\n".join(system_parts).strip()
-    user_block = "\n\n".join(user_parts).strip()
+    system_block = "\n\n".join(system_parts)
+    user_block = "\n\n".join(user_parts)
     if system_block:
-        return f"{system_block}\n\n{user_block}"
+        return f"[SYSTEM]\n{system_block}\n\n{user_block}"
     return user_block
 
 
