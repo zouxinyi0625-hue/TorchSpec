@@ -119,10 +119,16 @@ def main() -> None:
                 out = draft(inputs_embeds=inp, position_ids=pos,
                             shared_kv_states=shared_kv)
                 dpred = out.logits.argmax(-1)            # (1,T)
-                # score answer region; for B the last position has no t+1, drop it
                 lo, hi = prompt_len - 1, T - 2
                 dp = dpred[0, lo:hi]
-                tp = tgt_pred[0, lo:hi]
+                if name == "B_token_t+1":
+                    # draft at pos t was fed token_{t+1} and hidden_t, so it
+                    # predicts token_{t+2}; compare against target-greedy at t+1
+                    # (= token_{t+2}), NOT at t.
+                    tp = tgt_pred[0, lo + 1:hi + 1]
+                else:
+                    # A fed token_t -> predicts token_{t+1} = target-greedy at t
+                    tp = tgt_pred[0, lo:hi]
                 agg[name][0] += (dp == tp).sum().item()
                 agg[name][1] += dp.numel()
         print(f"  prompt {i}: T={T}  A={agg['A_token_t'][0]}/{agg['A_token_t'][1]}  "
