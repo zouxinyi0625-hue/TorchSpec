@@ -56,7 +56,12 @@ def main() -> None:
     ap.add_argument("--device", default="cuda:0")
     args = ap.parse_args()
 
-    from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from torchspec.models.draft.gemma4_mtp import (
+        Gemma4MTPConfig,
+        Gemma4MTPDraftModel,
+    )
 
     dev = args.device
     tok = AutoTokenizer.from_pretrained(args.target, trust_remote_code=True)
@@ -73,9 +78,10 @@ def main() -> None:
     print(f"  backbone_hidden={backbone_hidden} embed_scale={embed_scale:.2f}")
 
     def load_draft(path):
-        return AutoModel.from_pretrained(
-            path, torch_dtype=torch.bfloat16, trust_remote_code=True
-        ).to(dev).eval()
+        cfg = Gemma4MTPConfig(assistant_model_path=path, target_model_path=args.target)
+        m = Gemma4MTPDraftModel(cfg)
+        m.load_assistant_weights(path)
+        return m.to(dev).to(torch.bfloat16).eval()
 
     print("loading official draft ...")
     d_off = load_draft(args.official)
@@ -85,9 +91,9 @@ def main() -> None:
     lines = [l for l in open(args.data, encoding="utf-8") if l.strip()][: args.num_prompts]
 
     def run_draft(draft, inputs_embeds, position_ids, shared_kv):
-        out = draft(inputs_embeds=inputs_embeds, position_ids=position_ids,
-                    shared_kv_states=shared_kv, use_cache=False)
-        return out.logits  # (B, T, V)
+        logits, _ = draft(inputs_embeds=inputs_embeds, position_ids=position_ids,
+                          shared_kv_states=shared_kv)
+        return logits  # (B, T, V)
 
     agg = {"official": [0, 0], "trained": [0, 0]}  # [correct, total]
 
