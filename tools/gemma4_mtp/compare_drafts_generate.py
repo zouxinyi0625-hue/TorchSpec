@@ -132,23 +132,27 @@ def main() -> None:
                     max_new_tokens=args.gen_len, do_sample=False,
                 )
             gen_tokens += int(out.shape[1] - ids.shape[1])
-        acc, prop, steps = STATS["accepted"], STATS["proposed"], STATS["steps"]
-        rate = acc / max(prop, 1)
-        length = acc / max(steps, 1)
-        # Robust fallback accept_len: generated tokens per drafting round.
-        len_fallback = gen_tokens / max(steps, 1)
+        # Derive accepts from generation, no internal hooks needed:
+        # each drafting round produces (accepted + 1) tokens, so
+        #   total_accepted = gen_tokens - rounds
+        #   accept_rate    = total_accepted / proposed
+        #   accept_len     = gen_tokens / rounds   (accepted + 1 per round)
+        prop = STATS["proposed"]
         rounds = STATS["rounds"]
-        avg_proposed = STATS["proposed"] / max(rounds, 1)
-        results[name] = (rate, length, acc, prop, steps, gen_tokens, len_fallback)
+        accepted = max(gen_tokens - rounds, 0)
+        rate = accepted / max(prop, 1)
+        length = gen_tokens / max(rounds, 1)
+        avg_proposed = prop / max(rounds, 1)
+        results[name] = (rate, length, accepted, prop, rounds, gen_tokens, avg_proposed)
         print(f"  {name:9}: accept_rate={rate:.4f}  accept_len={length:.2f}  "
-              f"gen_len/round={len_fallback:.2f}  avg_proposed/round={avg_proposed:.2f}  "
-              f"(acc={acc} prop={prop} steps={steps} rounds={rounds} gen={gen_tokens})")
+              f"avg_proposed/round={avg_proposed:.2f}  "
+              f"(accepted={accepted} proposed={prop} rounds={rounds} gen={gen_tokens})")
 
     print("=" * 60)
     print("REAL assisted-generation acceptance (official HF API, same target):")
     for name in ("official", "trained"):
-        r, l, a, p, s, g, lf = results[name]
-        print(f"  {name:9}: accept_rate={r:.4f}  accept_len={l:.2f}  gen_len/round={lf:.2f}")
+        r, l, a, p, s, g, ap = results[name]
+        print(f"  {name:9}: accept_rate={r:.4f}  accept_len={l:.2f}  avg_proposed={ap:.2f}")
     ro = results["official"][0]
     rt = results["trained"][0]
     print("-" * 60)
