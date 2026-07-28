@@ -48,7 +48,9 @@ def main() -> None:
     tok = AutoTokenizer.from_pretrained(args.target, trust_remote_code=True)
 
     # Build prompts: system+user only, model generates the answer (real drafting).
-    prompts = []
+    # Skip prompts that don't leave room for output within max_model_len.
+    budget = args.max_model_len - args.max_tokens - 8
+    prompts, skipped = [], 0
     for line in open(args.data, encoding="utf-8"):
         if not line.strip():
             continue
@@ -56,10 +58,15 @@ def main() -> None:
         msgs = [{"role": ("system" if m.get("role") == "system" else "user"),
                  "content": m["content"]}
                 for m in rec["conversations"] if m.get("role") in ("system", "user")]
-        prompts.append(tok.apply_chat_template(
-            msgs, tokenize=False, add_generation_prompt=True))
+        text = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+        n_tok = len(tok(text).input_ids)
+        if n_tok > budget:
+            skipped += 1
+            continue
+        prompts.append(text)
         if len(prompts) >= args.num_prompts:
             break
+    print(f"prompts kept={len(prompts)} skipped_too_long={skipped} (budget={budget} tok)")
 
     llm = LLM(
         model=args.target,
