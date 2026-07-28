@@ -157,6 +157,10 @@ def main() -> None:
             # rope on q at position pos[s]
             cos, sin = rotary(x[s:s + 1].unsqueeze(0), pos_ids[:, s:s + 1],
                               layer_type=lt)
+            if li == 3:
+                print(f"  [dbg L3 rope] cos_shape={tuple(cos.shape)} "
+                      f"cos[0,0,:6]={cos[0,0,:6].tolist()} "
+                      f"cos[0,0,-6:]={cos[0,0,-6:].tolist()}")
             # apply_rotary: q (1,nh,hd), cos/sin (1,1,hd)
             from transformers.models.gemma4.modeling_gemma4 import apply_rotary_pos_emb
             q_r = apply_rotary_pos_emb(q.unsqueeze(0), cos, sin, unsqueeze_dim=2)[0]  # (1,nh,hd)?
