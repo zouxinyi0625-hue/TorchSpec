@@ -142,6 +142,11 @@ def main() -> None:
             lt = attn.layer_type
             hd = attn.head_dim
             nh = attn.config.num_attention_heads
+            if li == 3:
+                qw = attn.q_proj.weight.shape
+                print(f"  [dbg L{li}] lt={lt} head_dim={hd} num_heads={nh} "
+                      f"q_proj={tuple(qw)} q_out_per_head={qw[0]//nh} "
+                      f"kv_shape={tuple(kv[lt][0].shape)}")
             residual = h
             x = layer.input_layernorm(h)                        # (N,H)
 
