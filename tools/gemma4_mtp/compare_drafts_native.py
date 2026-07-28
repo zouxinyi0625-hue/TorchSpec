@@ -89,14 +89,30 @@ def main() -> None:
     for i, line in enumerate(lines):
         rec = json.loads(line)
         convs = rec["conversations"]
-        msgs = [{"role": ("assistant" if m.get("role") in ("assistant", "model")
+        norm = [{"role": ("assistant" if m.get("role") in ("assistant", "model")
                           else m.get("role", "user")),
                  "content": m["content"]} for m in convs]
-        ids = tok.apply_chat_template(msgs, tokenize=True, return_tensors="pt")
-        if hasattr(ids, "input_ids"):
-            ids = ids.input_ids
-        ids = ids[:, : args.max_len].to(dev)
-        T = ids.shape[1]
+
+        # Full conversation tokens.
+        full = tok.apply_chat_template(norm, tokenize=True, return_tensors="pt")
+        if hasattr(full, "input_ids"):
+            full = full.input_ids
+        full = full[:, : args.max_len].to(dev)
+
+        # Prompt-only tokens (everything up to the assistant turn + gen prompt).
+        # The assistant answer is the region AFTER prompt_len -> that's where a
+        # real speculative decoder actually drafts. Score ONLY there.
+        prompt_msgs = [m for m in norm if m["role"] != "assistant"]
+        pids = tok.apply_chat_template(prompt_msgs, tokenize=True,
+                                       add_generation_prompt=True, return_tensors="pt")
+        if hasattr(pids, "input_ids"):
+            pids = pids.input_ids
+        prompt_len = pids.shape[1]
+        T = full.shape[1]
+        if prompt_len >= T:
+            print(f"  prompt {i}: SKIP (prompt_len {prompt_len} >= T {T})")
+            continue
+        ids = full
         pos = torch.arange(T, device=dev).unsqueeze(0)
 
         with torch.no_grad():
@@ -109,13 +125,20 @@ def main() -> None:
             tok_emb = F.embedding(ids, embed_w) * embed_scale     # (1,T,2816)
             inputs_embeds = torch.cat([tok_emb, tgt_hidden], dim=-1)  # (1,T,5632)
 
+            # Score only the assistant-answer region [prompt_len-1 : T-1]:
+            # position p predicts token p+1; the first answer token is at
+            # index prompt_len, predicted from position prompt_len-1.
+            lo, hi = prompt_len - 1, T - 1
             for name, draft in (("official", d_off), ("trained", d_trn)):
                 out = draft(inputs_embeds=inputs_embeds, position_ids=pos,
                             shared_kv_states=shared_kv)
                 dpred = out.logits.argmax(-1)            # (1,T)
-                agg[name][0] += (dpred == tgt_pred).sum().item()
-                agg[name][1] += dpred.numel()
-        print(f"  prompt {i}: T={T}  official={agg['official'][0]}/{agg['official'][1]}  "
+                dp = dpred[0, lo:hi]
+                tp = tgt_pred[0, lo:hi]
+                agg[name][0] += (dp == tp).sum().item()
+                agg[name][1] += dp.numel()
+        print(f"  prompt {i}: T={T} ans_tokens={hi-lo}  "
+              f"official={agg['official'][0]}/{agg['official'][1]}  "
               f"trained={agg['trained'][0]}/{agg['trained'][1]}")
 
     print("=" * 60)
