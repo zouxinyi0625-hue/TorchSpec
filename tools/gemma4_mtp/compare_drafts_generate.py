@@ -104,34 +104,31 @@ def main() -> None:
 
     results = {}
     for name, draft in drafts.items():
-        try:
-            draft.generation_config.num_assistant_tokens = args.num_assistant_tokens
-            draft.generation_config.num_assistant_tokens_schedule = "constant"
-        except Exception:
-            pass
+        # Do NOT override num_assistant_tokens -- use the draft's own generation
+        # config, exactly like the official usage.
 
         STATS["accepted"] = STATS["proposed"] = STATS["steps"] = STATS["rounds"] = 0
         gen_tokens = 0
         for i, line in enumerate(lines):
             rec = json.loads(line)
             convs = rec["conversations"]
-            prompt_msgs = [{"role": ("user" if m.get("role") not in ("system",) else "system"),
+            prompt_msgs = [{"role": ("system" if m.get("role") == "system" else "user"),
                             "content": m["content"]}
                            for m in convs if m.get("role") in ("system", "user")]
             inputs = proc.apply_chat_template(
                 prompt_msgs, tokenize=True, return_dict=True, return_tensors="pt",
-                add_generation_prompt=True,
-            )
-            ids = inputs["input_ids"][:, : args.max_len].to(target.device)
-            am = inputs.get("attention_mask")
-            am = am[:, : args.max_len].to(target.device) if am is not None else None
+                add_generation_prompt=True, enable_thinking=False,
+            ).to(target.device)
+            input_len = inputs["input_ids"].shape[-1]
+            if input_len > args.max_len:
+                continue
             with torch.no_grad():
                 out = target.generate(
-                    input_ids=ids, attention_mask=am,
+                    **inputs,
                     assistant_model=draft,
                     max_new_tokens=args.gen_len, do_sample=False,
                 )
-            gen_tokens += int(out.shape[1] - ids.shape[1])
+            gen_tokens += int(out.shape[1] - input_len)
         # Derive accepts from generation, no internal hooks needed:
         # each drafting round produces (accepted + 1) tokens, so
         #   total_accepted = gen_tokens - rounds
