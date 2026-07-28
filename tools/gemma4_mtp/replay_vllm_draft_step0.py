@@ -99,10 +99,39 @@ def main() -> None:
         args.official, dtype=torch.bfloat16).to(dev).eval()
     pos = torch.arange(N, device=dev).unsqueeze(0)
 
+    # Diagnostic: print HF draft layer types + kv-shared mapping + what key each
+    # shared layer will look up, to confirm the shared_kv contract is satisfied.
+    print("--- HF draft layer / shared_kv contract ---")
+    try:
+        import torch.nn as nn
+        qd = [draft]
+        dlayers = None
+        while qd:
+            m = qd.pop(0)
+            if hasattr(m, "layers") and isinstance(getattr(m, "layers"), nn.ModuleList):
+                dlayers = m.layers
+                break
+            qd.extend(list(m.children()))
+        for li, lyr in enumerate(dlayers):
+            at = getattr(lyr, "self_attn", None)
+            lt = getattr(at, "layer_type", "?")
+            shared = getattr(at, "is_kv_shared_layer", "?")
+            has = (lt in shared_kv) if isinstance(lt, str) else "?"
+            print(f"  draft L{li}: layer_type={lt} is_kv_shared={shared} "
+                  f"shared_kv_has_key={has}")
+    except Exception as e:
+        print(f"  layer introspection failed: {e}")
+    print("--- end contract ---")
+
     with torch.no_grad():
         out = draft(inputs_embeds=inputs_embeds, position_ids=pos,
                     shared_kv_states=shared_kv)
         hf_argmax = out.logits[0].argmax(-1)     # (N,)
+        # also print top-5 at the sampled position for insight
+        for idx in tis:
+            top5 = out.logits[0, idx].topk(5)
+            print(f"  HF top5 @pos {idx}: ids={top5.indices.tolist()} "
+                  f"(vLLM wants {vllm_draft})")
 
     print("=" * 60)
     match = 0
