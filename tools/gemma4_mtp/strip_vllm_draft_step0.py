@@ -144,9 +144,12 @@ def main() -> None:
             nh = attn.config.num_attention_heads
             if li == 3:
                 qw = attn.q_proj.weight.shape
+                qn_w = attn.q_norm.weight.shape if hasattr(attn.q_norm, "weight") else "?"
                 print(f"  [dbg L{li}] lt={lt} head_dim={hd} num_heads={nh} "
                       f"q_proj={tuple(qw)} q_out_per_head={qw[0]//nh} "
-                      f"kv_shape={tuple(kv[lt][0].shape)}")
+                      f"kv_shape={tuple(kv[lt][0].shape)} q_norm_w={qn_w} "
+                      f"is_kv_shared={getattr(attn,'is_kv_shared_layer','?')} "
+                      f"use_alt={getattr(attn,'use_alternative_attention','?')}")
             residual = h
             x = layer.input_layernorm(h)                        # (N,H)
 
