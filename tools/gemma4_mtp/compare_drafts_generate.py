@@ -27,51 +27,43 @@ import json
 
 import torch
 
-# Global tally updated by the patched _speculative_sampling.
-STATS = {"accepted": 0, "proposed": 0, "steps": 0}
+# Global tally updated by the patched candidate generator.
+STATS = {"accepted": 0, "proposed": 0, "steps": 0, "rounds": 0, "last_proposed": 0}
 
 
 def install_patch():
-    import transformers.generation.utils as U
-
-    # greedy assisted decoding does NOT call _speculative_sampling; the accepted
-    # count is computed inline and passed to candidate_generator.update_candidate_
-    # strategy(input_ids, scores, num_matches). Patch that to tally true accepts.
+    """Tally accepts/proposed the SAME way vLLM does:
+       proposed = draft tokens offered per round (candidate len)
+       accepted = matched tokens that round (num_matches)
+    Hook update_candidate_strategy(input_ids, scores, num_matches) for accepts,
+    and get_candidates return for proposed length."""
     from transformers.generation import candidate_generator as CG
 
-    targets = []
-    for cls_name in ("SinglePositionMultiTokenCandidateGenerator",
-                     "AssistedCandidateGenerator", "CandidateGenerator"):
-        cls = getattr(CG, cls_name, None)
-        if cls is not None and "update_candidate_strategy" in cls.__dict__:
-            targets.append(cls)
+    spm = getattr(CG, "SinglePositionMultiTokenCandidateGenerator", None)
+    if spm is None:
+        return
 
-    def make_patched(orig):
-        def patched(self, input_ids, scores, num_matches):
+    orig_gc = spm.get_candidates
+
+    def patched_gc(self, input_ids, *a, **k):
+        cand_ids, cand_logits = orig_gc(self, input_ids, *a, **k)
+        proposed = int(cand_ids.shape[1] - input_ids.shape[1])
+        STATS["proposed"] += max(proposed, 0)
+        STATS["rounds"] += 1
+        STATS["last_proposed"] = max(proposed, 0)
+        return cand_ids, cand_logits
+
+    spm.get_candidates = patched_gc
+
+    if "update_candidate_strategy" in spm.__dict__:
+        orig_us = spm.update_candidate_strategy
+
+        def patched_us(self, input_ids, scores, num_matches):
             STATS["accepted"] += int(num_matches)
             STATS["steps"] += 1
-            return orig(self, input_ids, scores, num_matches)
-        return patched
+            return orig_us(self, input_ids, scores, num_matches)
 
-    for cls in targets:
-        cls.update_candidate_strategy = make_patched(cls.update_candidate_strategy)
-
-    # Also tally proposed length by wrapping get_candidates on the concrete class.
-    spm = getattr(CG, "SinglePositionMultiTokenCandidateGenerator", None)
-    if spm is not None and "get_candidates" in spm.__dict__:
-        orig_gc = spm.get_candidates
-
-        def patched_gc(self, *a, **k):
-            cand_ids, cand_logits = orig_gc(self, *a, **k)
-            # proposed = candidate length beyond the input (rough; per call)
-            try:
-                inp = a[0] if a else k.get("input_ids")
-                STATS["proposed"] += max(int(cand_ids.shape[1] - inp.shape[1]), 0)
-            except Exception:
-                pass
-            return cand_ids, cand_logits
-
-        spm.get_candidates = patched_gc
+        spm.update_candidate_strategy = patched_us
 
 
 def main() -> None:
@@ -118,7 +110,7 @@ def main() -> None:
         except Exception:
             pass
 
-        STATS["accepted"] = STATS["proposed"] = STATS["steps"] = 0
+        STATS["accepted"] = STATS["proposed"] = STATS["steps"] = STATS["rounds"] = 0
         gen_tokens = 0
         for i, line in enumerate(lines):
             rec = json.loads(line)
@@ -145,10 +137,12 @@ def main() -> None:
         length = acc / max(steps, 1)
         # Robust fallback accept_len: generated tokens per drafting round.
         len_fallback = gen_tokens / max(steps, 1)
+        rounds = STATS["rounds"]
+        avg_proposed = STATS["proposed"] / max(rounds, 1)
         results[name] = (rate, length, acc, prop, steps, gen_tokens, len_fallback)
         print(f"  {name:9}: accept_rate={rate:.4f}  accept_len={length:.2f}  "
-              f"gen_len/round={len_fallback:.2f}  "
-              f"(acc={acc} prop={prop} steps={steps} gen={gen_tokens})")
+              f"gen_len/round={len_fallback:.2f}  avg_proposed/round={avg_proposed:.2f}  "
+              f"(acc={acc} prop={prop} steps={steps} rounds={rounds} gen={gen_tokens})")
 
     print("=" * 60)
     print("REAL assisted-generation acceptance (official HF API, same target):")
