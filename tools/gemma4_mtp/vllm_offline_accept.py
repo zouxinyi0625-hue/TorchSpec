@@ -40,6 +40,8 @@ def main() -> None:
     ap.add_argument("--tp", type=int, default=2)
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--tag", default="draft")
+    ap.add_argument("--quantization", default=None,
+                    help="set to 'none' to disable FP8 (bf16), or leave unset for config default")
     args = ap.parse_args()
 
     from transformers import AutoTokenizer
@@ -68,7 +70,7 @@ def main() -> None:
             break
     print(f"prompts kept={len(prompts)} skipped_too_long={skipped} (budget={budget} tok)")
 
-    llm = LLM(
+    llm_kwargs = dict(
         model=args.target,
         speculative_config={"model": args.assistant,
                             "num_speculative_tokens": args.num_spec_tokens},
@@ -77,6 +79,11 @@ def main() -> None:
         max_model_len=args.max_model_len,
         disable_log_stats=False,  # required for get_metrics()
     )
+    if args.quantization is not None:
+        # 'none' -> Python None disables FP8 (bf16); else pass through.
+        llm_kwargs["quantization"] = (None if args.quantization.lower() == "none"
+                                      else args.quantization)
+    llm = LLM(**llm_kwargs)
     sp = SamplingParams(temperature=args.temperature, max_tokens=args.max_tokens,
                         top_p=(0.95 if args.temperature > 0 else 1.0))
     llm.generate(prompts, sp)
