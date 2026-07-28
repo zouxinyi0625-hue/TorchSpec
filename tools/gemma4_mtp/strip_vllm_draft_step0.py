@@ -174,6 +174,8 @@ def main() -> None:
             # only the sampled row propagates; replace row s
             h = h.clone()
             h[s:s + 1] = hs
+            print(f"  [layer {li}] type={lt} hs_norm={hs.norm().item():.2f} "
+                  f"attn_out_norm={attn_o.norm().item():.2f}")
 
         draft_hidden = final_norm(h[s:s + 1])                  # (1,H)
         logits = lm_head(draft_hidden)                         # (1,V)
