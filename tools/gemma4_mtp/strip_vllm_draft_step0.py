@@ -118,17 +118,20 @@ def main() -> None:
     # rotary for full attention). sliding: default theta=10000, full_dim=256;
     # full: proportional theta=1e6, partial_rotary_factor=0.25, head=512.
     from vllm.model_executor.layers.rotary_embedding import get_rope
-    vllm_ropes = {
-        "sliding_attention": get_rope(
-            head_size=256, max_position=131072, is_neox_style=True,
-            dtype=torch.bfloat16,
-            rope_parameters={"rope_type": "default", "rope_theta": 10000.0}),
-        "full_attention": get_rope(
-            head_size=512, max_position=131072, is_neox_style=True,
-            dtype=torch.bfloat16,
-            rope_parameters={"rope_type": "proportional", "rope_theta": 1000000.0,
-                             "partial_rotary_factor": 0.25}),
-    }
+    from vllm.config import VllmConfig, set_current_vllm_config
+    _vc = VllmConfig()
+    with set_current_vllm_config(_vc):
+        vllm_ropes = {
+            "sliding_attention": get_rope(
+                head_size=256, max_position=131072, is_neox_style=True,
+                dtype=torch.bfloat16,
+                rope_parameters={"rope_type": "default", "rope_theta": 10000.0}),
+            "full_attention": get_rope(
+                head_size=512, max_position=131072, is_neox_style=True,
+                dtype=torch.bfloat16,
+                rope_parameters={"rope_type": "proportional", "rope_theta": 1000000.0,
+                                 "partial_rotary_factor": 0.25}),
+        }
     for _rp in vllm_ropes.values():
         _rp.to(dev)
 
