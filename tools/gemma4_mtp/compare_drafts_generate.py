@@ -34,18 +34,44 @@ STATS = {"accepted": 0, "proposed": 0, "steps": 0}
 def install_patch():
     import transformers.generation.utils as U
 
-    orig = U._speculative_sampling
+    # greedy assisted decoding does NOT call _speculative_sampling; the accepted
+    # count is computed inline and passed to candidate_generator.update_candidate_
+    # strategy(input_ids, scores, num_matches). Patch that to tally true accepts.
+    from transformers.generation import candidate_generator as CG
 
-    def patched(candidate_input_ids, candidate_logits, candidate_length,
-                new_logits, is_done_candidate):
-        valid_tokens, n_matches = orig(candidate_input_ids, candidate_logits,
-                                       candidate_length, new_logits, is_done_candidate)
-        STATS["accepted"] += int(n_matches)
-        STATS["proposed"] += int(candidate_length)
-        STATS["steps"] += 1
-        return valid_tokens, n_matches
+    targets = []
+    for cls_name in ("SinglePositionMultiTokenCandidateGenerator",
+                     "AssistedCandidateGenerator", "CandidateGenerator"):
+        cls = getattr(CG, cls_name, None)
+        if cls is not None and "update_candidate_strategy" in cls.__dict__:
+            targets.append(cls)
 
-    U._speculative_sampling = patched
+    def make_patched(orig):
+        def patched(self, input_ids, scores, num_matches):
+            STATS["accepted"] += int(num_matches)
+            STATS["steps"] += 1
+            return orig(self, input_ids, scores, num_matches)
+        return patched
+
+    for cls in targets:
+        cls.update_candidate_strategy = make_patched(cls.update_candidate_strategy)
+
+    # Also tally proposed length by wrapping get_candidates on the concrete class.
+    spm = getattr(CG, "SinglePositionMultiTokenCandidateGenerator", None)
+    if spm is not None and "get_candidates" in spm.__dict__:
+        orig_gc = spm.get_candidates
+
+        def patched_gc(self, *a, **k):
+            cand_ids, cand_logits = orig_gc(self, *a, **k)
+            # proposed = candidate length beyond the input (rough; per call)
+            try:
+                inp = a[0] if a else k.get("input_ids")
+                STATS["proposed"] += max(int(cand_ids.shape[1] - inp.shape[1]), 0)
+            except Exception:
+                pass
+            return cand_ids, cand_logits
+
+        spm.get_candidates = patched_gc
 
 
 def main() -> None:
@@ -93,6 +119,7 @@ def main() -> None:
             pass
 
         STATS["accepted"] = STATS["proposed"] = STATS["steps"] = 0
+        gen_tokens = 0
         for i, line in enumerate(lines):
             rec = json.loads(line)
             convs = rec["conversations"]
@@ -107,23 +134,27 @@ def main() -> None:
             am = inputs.get("attention_mask")
             am = am[:, : args.max_len].to(target.device) if am is not None else None
             with torch.no_grad():
-                target.generate(
+                out = target.generate(
                     input_ids=ids, attention_mask=am,
                     assistant_model=draft,
                     max_new_tokens=args.gen_len, do_sample=False,
                 )
+            gen_tokens += int(out.shape[1] - ids.shape[1])
         acc, prop, steps = STATS["accepted"], STATS["proposed"], STATS["steps"]
         rate = acc / max(prop, 1)
         length = acc / max(steps, 1)
-        results[name] = (rate, length, acc, prop, steps)
+        # Robust fallback accept_len: generated tokens per drafting round.
+        len_fallback = gen_tokens / max(steps, 1)
+        results[name] = (rate, length, acc, prop, steps, gen_tokens, len_fallback)
         print(f"  {name:9}: accept_rate={rate:.4f}  accept_len={length:.2f}  "
-              f"({acc}/{prop} over {steps} steps)")
+              f"gen_len/round={len_fallback:.2f}  "
+              f"(acc={acc} prop={prop} steps={steps} gen={gen_tokens})")
 
     print("=" * 60)
     print("REAL assisted-generation acceptance (official HF API, same target):")
     for name in ("official", "trained"):
-        r, l, a, p, s = results[name]
-        print(f"  {name:9}: accept_rate={r:.4f}  accept_len={l:.2f}")
+        r, l, a, p, s, g, lf = results[name]
+        print(f"  {name:9}: accept_rate={r:.4f}  accept_len={l:.2f}  gen_len/round={lf:.2f}")
     ro = results["official"][0]
     rt = results["trained"][0]
     print("-" * 60)
