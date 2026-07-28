@@ -75,6 +75,7 @@ def main() -> None:
         tensor_parallel_size=args.tp,
         trust_remote_code=True,
         max_model_len=args.max_model_len,
+        disable_log_stats=False,  # required for get_metrics()
     )
     sp = SamplingParams(temperature=args.temperature, max_tokens=args.max_tokens,
                         top_p=(0.95 if args.temperature > 0 else 1.0))
