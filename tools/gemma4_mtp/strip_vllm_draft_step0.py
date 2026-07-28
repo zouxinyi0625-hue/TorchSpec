@@ -180,6 +180,20 @@ def main() -> None:
         argmax = int(logits[0].argmax().item())
         top5 = logits[0].topk(5).indices.tolist()
 
+    # --- layered verification against vLLM dump ---
+    print("--- layered check vs dump ---")
+    vllm_sample_hidden = d.get("sample_hidden_states")
+    if vllm_sample_hidden is not None:
+        vsh = vllm_sample_hidden.to(dev).to(torch.float32)      # (1,1024) draft-dim
+        mine = draft_hidden.to(torch.float32)
+        cos = F.cosine_similarity(mine, vsh, dim=-1)
+        print(f"  my draft_hidden vs vLLM sample_hidden: cos={cos.mean().item():.4f} "
+              f"my_norm={mine.norm().item():.2f} vllm_norm={vsh.norm().item():.2f}")
+        # what token does vLLM's OWN sample_hidden produce via this lm_head?
+        vllm_logits = lm_head(vsh.to(torch.bfloat16))
+        print(f"  lm_head(vLLM sample_hidden) argmax={int(vllm_logits[0].argmax())} "
+              f"(should be {vllm_draft[0]})")
+
     print("=" * 60)
     print(f"stripped draft argmax @pos {s}: {argmax}")
     print(f"top5: {top5}")
