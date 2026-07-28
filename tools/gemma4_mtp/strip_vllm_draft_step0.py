@@ -121,6 +121,18 @@ def main() -> None:
         h = pre_projection(combined)                             # (N, H)
         H = h.shape[-1]
 
+        # vLLM per-layer hidden for parity check
+        vllm_layers = dict(d.get("layer_hidden") or [])
+        def chk(name, mine_row):
+            ref = vllm_layers.get(name)
+            if ref is None:
+                return
+            r = ref[s].to(dev).to(torch.float32) if ref.dim() == 2 else ref.to(dev).to(torch.float32)
+            m = mine_row.reshape(-1).to(torch.float32)
+            c = F.cosine_similarity(m.unsqueeze(0), r.reshape(1, -1), dim=-1).item()
+            print(f"  [parity {name}] cos={c:.4f} my_norm={m.norm():.2f} vllm_norm={r.norm():.2f}")
+        chk("pre_projection", h[s])
+
         # position embeddings for all N (needed for K side already applied, but
         # we only rope the single query; use per-layer rotary if it differs).
         pos_ids = positions.unsqueeze(0)                        # (1,N)
@@ -184,6 +196,7 @@ def main() -> None:
             # only the sampled row propagates; replace row s
             h = h.clone()
             h[s:s + 1] = hs
+            chk(f"layer{li}", hs[0])
             print(f"  [layer {li}] type={lt} hs_norm={hs.norm().item():.2f} "
                   f"attn_out_norm={attn_o.norm().item():.2f}")
 
