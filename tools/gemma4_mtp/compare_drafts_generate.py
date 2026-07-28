@@ -58,6 +58,7 @@ def main() -> None:
     ap.add_argument("--gen-len", type=int, default=128)
     ap.add_argument("--num-assistant-tokens", type=int, default=5)
     ap.add_argument("--max-len", type=int, default=4096)
+    ap.add_argument("--device", default="cuda:0")
     args = ap.parse_args()
 
     install_patch()
@@ -67,17 +68,18 @@ def main() -> None:
     proc = AutoProcessor.from_pretrained(args.target)
     tok = getattr(proc, "tokenizer", proc)
 
-    print("loading target ...")
+    dev = args.device
+    print(f"loading target on {dev} ...")
     target = AutoModelForCausalLM.from_pretrained(
-        args.target, dtype="auto", device_map="auto"
-    ).eval()
+        args.target, dtype="auto"
+    ).to(dev).eval()
 
-    print("loading drafts ...")
+    print("loading drafts (same device) ...")
     drafts = {
         "official": AutoModelForCausalLM.from_pretrained(
-            args.official, dtype="auto", device_map="auto").eval(),
+            args.official, dtype="auto").to(dev).eval(),
         "trained": AutoModelForCausalLM.from_pretrained(
-            args.trained, dtype="auto", device_map="auto").eval(),
+            args.trained, dtype="auto").to(dev).eval(),
     }
 
     lines = [l for l in open(args.data, encoding="utf-8") if l.strip()][: args.num_prompts]
