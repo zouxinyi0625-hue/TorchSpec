@@ -42,6 +42,8 @@ def main() -> None:
     ap.add_argument("--tag", default="draft")
     ap.add_argument("--quantization", default=None,
                     help="set to 'none' to disable FP8 (bf16), or leave unset for config default")
+    ap.add_argument("--enforce-eager", action="store_true",
+                    help="disable torch.compile/cudagraph (needed for layer-hidden dump side effects)")
     args = ap.parse_args()
 
     from transformers import AutoTokenizer
@@ -78,6 +80,7 @@ def main() -> None:
         trust_remote_code=True,
         max_model_len=args.max_model_len,
         disable_log_stats=False,  # required for get_metrics()
+        enforce_eager=args.enforce_eager,
     )
     if args.quantization is not None:
         # 'none' -> Python None disables FP8 (bf16); else pass through.
