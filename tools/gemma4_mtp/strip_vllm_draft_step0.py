@@ -114,6 +114,24 @@ def main() -> None:
     # passes (cos,sin) to layers. We need per-layer-type rope (sliding/full).
     rotary = find_module_with(draft, "rotary_emb")
 
+    # Build vLLM's OWN rope per layer-type (exact vLLM math, incl. partial
+    # rotary for full attention). sliding: default theta=10000, full_dim=256;
+    # full: proportional theta=1e6, partial_rotary_factor=0.25, head=512.
+    from vllm.model_executor.layers.rotary_embedding import get_rope
+    vllm_ropes = {
+        "sliding_attention": get_rope(
+            head_size=256, rotary_dim=256, max_position=131072,
+            base=10000.0, is_neox_style=True, dtype=torch.bfloat16,
+            rope_parameters={"rope_type": "default"}),
+        "full_attention": get_rope(
+            head_size=512, rotary_dim=int(512 * 0.25), max_position=131072,
+            base=1000000.0, is_neox_style=True, dtype=torch.bfloat16,
+            rope_parameters={"rope_type": "proportional",
+                             "partial_rotary_factor": 0.25}),
+    }
+    for _rp in vllm_ropes.values():
+        _rp.to(dev)
+
     with torch.no_grad():
         # inputs_embeds = cat[ embed(input_ids)*scale , hidden ]  (draft path)
         tok_emb = F.embedding(input_ids, embed_w) * scale        # (N,2816)
@@ -157,17 +175,13 @@ def main() -> None:
             q = attn.q_proj(x[s:s + 1])                          # (1, nh*hd)
             q = q.view(1, nh, hd)
             q = attn.q_norm(q)                                  # (1,nh,hd)
-            # rope on q at position pos[s]
-            cos, sin = rotary(x[s:s + 1].unsqueeze(0), pos_ids[:, s:s + 1],
-                              layer_type=lt)
-            if li == 3:
-                print(f"  [dbg L3 rope] cos_shape={tuple(cos.shape)} "
-                      f"cos[0,0,:6]={cos[0,0,:6].tolist()} "
-                      f"cos[0,0,-6:]={cos[0,0,-6:].tolist()}")
-            # apply_rotary: q (1,nh,hd), cos/sin (1,1,hd)
-            from transformers.models.gemma4.modeling_gemma4 import apply_rotary_pos_emb
-            q_r = apply_rotary_pos_emb(q.unsqueeze(0), cos, sin, unsqueeze_dim=2)[0]  # (1,nh,hd)?
-            q_r = q_r.reshape(1, nh, hd).transpose(0, 1)        # (nh,1,hd)
+            # rope on q using vLLM's own rope (exact vLLM math, incl. partial
+            # rotary for the full-attention layer). q flattened to (tokens, nh*hd).
+            vrope = vllm_ropes[lt]
+            q_flat = q.reshape(1, nh * hd)                       # (1, nh*hd)
+            pos1 = positions[s:s + 1]                            # (1,)
+            q_rot, _ = vrope.forward_native(pos1, q_flat, None)
+            q_r = q_rot.view(1, nh, hd).transpose(0, 1)          # (nh,1,hd)
 
             k, v = kv[lt]                                       # (N, kvh, hd)
             kvh = k.shape[1]
