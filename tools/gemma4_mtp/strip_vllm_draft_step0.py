@@ -137,7 +137,8 @@ def main() -> None:
             q = q.view(1, nh, hd)
             q = attn.q_norm(q)                                  # (1,nh,hd)
             # rope on q at position pos[s]
-            cos, sin = rotary(x[s:s + 1].unsqueeze(0), pos_ids[:, s:s + 1])
+            cos, sin = rotary(x[s:s + 1].unsqueeze(0), pos_ids[:, s:s + 1],
+                              layer_type=lt)
             # apply_rotary: q (1,nh,hd), cos/sin (1,1,hd)
             from transformers.models.gemma4.modeling_gemma4 import apply_rotary_pos_emb
             q_r = apply_rotary_pos_emb(q.unsqueeze(0), cos, sin, unsqueeze_dim=2)[0]  # (1,nh,hd)?
