@@ -58,6 +58,7 @@ def main() -> None:
     ap.add_argument("--target", required=True)
     ap.add_argument("--dump", default="/tmp/vllm_draft_step0.pt")
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--sliding-window", type=int, default=1024)
     args = ap.parse_args()
 
     from transformers import AutoModelForCausalLM, Gemma4AssistantForCausalLM
@@ -152,8 +153,17 @@ def main() -> None:
             rep = nh // kvh
             k_t = k_t.repeat_interleave(rep, dim=0)             # (nh,N,hd)
             v_t = v_t.repeat_interleave(rep, dim=0)
-            # single-query attention over all N, scaling=1.0, no mask
+            # single-query attention, scaling=1.0
             attn_w = torch.matmul(q_r, k_t.transpose(-1, -2)) * 1.0   # (nh,1,N)
+            # sliding-window mask: sliding layers only attend the last
+            # `sliding_window` positions up to the query position s.
+            sw = getattr(attn, "sliding_window", None) or args.sliding_window
+            if lt == "sliding_attention" and sw:
+                lo = max(0, s - int(sw) + 1)
+                mask = torch.full((1, N), float("-inf"), device=attn_w.device,
+                                  dtype=attn_w.dtype)
+                mask[0, lo:s + 1] = 0.0
+                attn_w = attn_w + mask
             attn_w = attn_w.softmax(dim=-1)
             attn_o = torch.matmul(attn_w, v_t)                 # (nh,1,hd)
             attn_o = attn_o.transpose(0, 1).reshape(1, nh * hd)
