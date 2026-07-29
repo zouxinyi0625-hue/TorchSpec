@@ -191,6 +191,16 @@ def main() -> None:
 
             k, v = kv[lt]                                       # (N, kvh, hd)
             kvh = k.shape[1]
+            # vLLM draft uses num_kv_heads from config (8) even for the full
+            # layer, but the target's full KV cache only has 2 heads. vLLM
+            # expands the 2 target heads up to the draft's kv-head count before
+            # GQA. Match that: repeat target heads to vllm_kvheads, then GQA.
+            attn_dump = d.get("attn_dump")
+            vllm_kvh = attn_dump[li]["num_kv_heads"] if attn_dump and li < len(attn_dump) else kvh
+            if vllm_kvh != kvh and vllm_kvh % kvh == 0:
+                k = k.repeat_interleave(vllm_kvh // kvh, dim=1)
+                v = v.repeat_interleave(vllm_kvh // kvh, dim=1)
+                kvh = vllm_kvh
             k_t = k.transpose(0, 1)                             # (kvh, N, hd)
             v_t = v.transpose(0, 1)
             # GQA: repeat kv heads to nh
