@@ -68,7 +68,7 @@ def main() -> None:
         from torchspec.data.preprocessing import preprocess_conversations
         from torchspec.data.template import TEMPLATE_REGISTRY
         tok = AutoTokenizer.from_pretrained(args.target, trust_remote_code=True)
-        ct = TEMPLATE_REGISTRY[args.chat_template]
+        ct = TEMPLATE_REGISTRY.get(args.chat_template)
         rows = []
         with open(args.data) as f:
             for line in f:
