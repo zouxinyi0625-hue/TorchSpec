@@ -71,9 +71,9 @@ def compare(a, b, label):
     a = a.float()
     b = b.float()
     if a.shape != b.shape:
-        print(f"  [{label}] SHAPE DIFF a={tuple(a.shape)} b={tuple(b.shape)}")
-        n = min(a.shape[0], b.shape[0])
-        a, b = a[:n], b[:n]
+        print(f"  [{label}] SHAPE DIFF a={tuple(a.shape)} b={tuple(b.shape)} "
+              f"-> independent layers, not comparable (do NOT freeze on this basis)")
+        return
     maxdiff = (a - b).abs().max().item()
     cos = F.cosine_similarity(a.reshape(1, -1), b.reshape(1, -1), dim=-1).item()
     same = "IDENTICAL" if maxdiff < 1e-6 else "DIFFERENT"
