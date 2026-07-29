@@ -242,14 +242,18 @@ def main() -> None:
             if li == 3 and d.get("attn_dump"):
                 vq = d["attn_dump"][li]["q_postrope"][s].to(dev).to(q_r.dtype)
                 vq_r = vq.view(nh, hd).unsqueeze(1)             # (nh,1,hd)
+                print(f"  [shape L3] q_r={tuple(q_r.shape)} vq_raw={tuple(vq.shape)} "
+                      f"vq_r={tuple(vq_r.shape)} k_t={tuple(k_t.shape)} v_t={tuple(v_t.shape)} "
+                      f"attn_w={tuple(attn_w.shape)} nh={nh} hd={hd} kvh={kvh} rep={rep} N={N}")
                 aw_v = torch.matmul(vq_r, k_t.transpose(-1, -2)).softmax(-1)
                 ao_v = torch.matmul(aw_v, v_t).transpose(0, 1).reshape(1, nh * hd)
                 aw_m = attn_w.softmax(-1)
                 ao_m = torch.matmul(aw_m, v_t).transpose(0, 1).reshape(1, nh * hd)
                 vo = d["attn_dump"][li]["attn_output"][s].to(dev).to(torch.float32)
+                print(f"  [shape L3 out] ao_m={tuple(ao_m.shape)} ao_v={tuple(ao_v.shape)} "
+                      f"vo={tuple(vo.shape)}")
                 cm = F.cosine_similarity(ao_m.reshape(1,-1).float(), vo.reshape(1,-1), dim=-1).item()
                 cv = F.cosine_similarity(ao_v.reshape(1,-1).float(), vo.reshape(1,-1), dim=-1).item()
-                # are q_r and vq_r actually equal elementwise?
                 eqmax = (q_r - vq_r).abs().max().item()
                 print(f"  [decisive L3] myq_attn_cos={cm:.4f} vllmq_attn_cos={cv:.4f} "
                       f"q_r_vs_vq_maxdiff={eqmax:.5f}")
