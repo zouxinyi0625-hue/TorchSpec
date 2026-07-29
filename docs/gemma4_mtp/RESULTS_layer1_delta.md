@@ -1,20 +1,37 @@
 # Gemma4 MTP layer1_delta — training results & vLLM deployment benchmark
 
-**Status: root cause IDENTIFIED (pending probe confirmation).** Training converged
-cleanly (eval acc 0.91, sim_acc_len 3.27), but the draft deploys in vLLM at ~half
-the official baseline's acceptance. Evidence points to a **train/deploy
-hidden-state mismatch**: training feeds the draft POST-norm target hidden, vLLM
-deployment feeds PRE-norm.
+**Status: ✅ RESOLVED — train/infer parity fixed, online bench improved on all metrics.**
+Root cause was the **training draft FORWARD** (HF parallel `create_attention_masks`
+≠ vLLM single-step), NOT the pre/post-norm hidden mismatch originally suspected.
+Fix = port the validated single-step **strip forward** into training + token/label
+off-by-one shift. Full workflow: [`WORKFLOW_train_infer_parity.md`](WORKFLOW_train_infer_parity.md).
 
 ---
 
-## 1. Master table — training vs deployment
+## 0. Latest result — vllm-msn online bench (2026-07-29, 200 prompts, 26b_e011_mtp)
+
+Trained draft = `hf_iter_0001399` (strip forward, 3 epoch, layer1). **All metrics up vs official baseline.**
+
+| Layer | accept % | accept_len | out tok/s | pos0 % |
+|-------|:---:|:---:|:---:|:---:|
+| **50** | 64.28 → **68.46** | 4.21 → **4.42** | 1505 → **1609** | 85.31 → **88.72** |
+| **layer1_delta** | 70.36 → **71.27** | 4.52 → **4.56** | 953 → **1205 (+26%)** | 88.06 → **89.20** |
+
+per-position (trained): 50 = 88.72/78.57/67.82/58.12/49.08 · layer1_delta = 89.20/79.64/70.49/62.37/54.67
+
+---
+
+## 0b. HISTORICAL (pre-fix, exp1) — the "deploys at half accept" failure
+
+> ⚠️ Below is the ORIGINAL failing run (exp1, `hf_iter_0002269`) that motivated the
+> investigation. The pre/post-norm hypothesis in it was **wrong** — the real cause was
+> the forward (see section 0 + WORKFLOW doc). Kept for history.
 
 | stage | harness | metric | pos0 / avg_acc | acc_len | notes |
 |-------|---------|--------|----------------|---------|-------|
 | **TRAIN eval** (1000) | TorchSpec teacher-force, mooncake hidden | avg_acc **0.9112**, avg_loss 0.3999 | 0.91 | **3.2697** | best=latest iter_0002269, no overfit |
 | **DEPLOY** baseline (official assistant) | vLLM online, fp8 | accept **65.57%** | 0.863 | **4.28** | official `models/assistant` |
-| **DEPLOY** trained (hf_iter_0002269) | vLLM online, fp8 | accept **33.02%** | 0.427 | 2.65 | our draft — HALVED |
+| **DEPLOY** trained (hf_iter_0002269) | vLLM online, fp8 | accept **33.02%** | 0.427 | 2.65 | our draft — HALVED (pre-fix) |
 | **DEPLOY** trained (hf_iter_0002269) | vLLM online, **bf16** | accept **33.50%** | 0.430 | 2.67 | fp8 ruled out |
 
 ---
