@@ -94,7 +94,7 @@ class Gemma4MTPStripForward(nn.Module):
     """
 
     def __init__(self, hf_assistant: nn.Module, sliding_window: int = 1024,
-                 rope_impl: str = "vllm"):
+                 rope_impl: str = "hf"):
         super().__init__()
         self.m = hf_assistant  # Gemma4AssistantForCausalLM
         self.sliding_window = sliding_window
@@ -254,8 +254,9 @@ def _main():
     ap.add_argument("--use-target-kv", action="store_true",
                     help="use target's dumped full-layer K/V (known-correct) "
                          "instead of Path-B gather for the full layer")
-    ap.add_argument("--rope", choices=["vllm", "hf"], default="vllm",
-                    help="rope implementation: vllm get_rope or HF apply_rotary")
+    ap.add_argument("--rope", choices=["vllm", "hf"], default="hf",
+                    help="rope implementation: HF apply_rotary (default, verified "
+                         "== vLLM) or vllm get_rope")
     args = ap.parse_args()
 
     from transformers import AutoModelForCausalLM, Gemma4AssistantForCausalLM
