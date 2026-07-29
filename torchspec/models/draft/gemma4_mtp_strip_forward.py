@@ -133,7 +133,7 @@ class Gemma4MTPStripForward(nn.Module):
         device = inputs_embeds.device
         ropes = self._ropes_for(device, inputs_embeds.dtype)
 
-        h, _ = self._maybe_tuple(self.pre_projection(inputs_embeds))  # (B,T,H)
+        h = self._maybe_tuple(self.pre_projection(inputs_embeds))[0]  # (B,T,H)
 
         for layer in self.layers:
             attn = layer.self_attn
