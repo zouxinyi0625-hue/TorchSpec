@@ -189,6 +189,16 @@ def main() -> None:
             q_rot, _ = vrope.forward_native(pos1, q_flat, None)
             q_r = q_rot.view(1, nh, hd).transpose(0, 1)          # (nh,1,hd)
 
+            # isolate q_norm vs rope: compare my pre-rope q vs vLLM's pre-rope q
+            if li == 3 and d.get("attn_dump") and d["attn_dump"][li].get("q_prerope") is not None:
+                vqp = d["attn_dump"][li]["q_prerope"][s].to(dev).to(torch.float32)
+                myqp = q_flat[0].to(torch.float32)
+                cpre = F.cosine_similarity(myqp.unsqueeze(0), vqp.unsqueeze(0), dim=-1).item()
+                vqpost = d["attn_dump"][li]["q_postrope"][s].to(dev).to(torch.float32)
+                myqpost = q_rot[0].to(torch.float32)
+                cpost = F.cosine_similarity(myqpost.unsqueeze(0), vqpost.unsqueeze(0), dim=-1).item()
+                print(f"  [q isolate L3] prerope_cos={cpre:.4f} postrope_cos={cpost:.4f}")
+
             # ISOLATION: optionally replace my q with vLLM's dumped q_postrope
             # to test whether the residual full-layer error is in q or attention.
             import os as _osq
