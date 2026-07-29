@@ -107,10 +107,11 @@ def main() -> None:
     cfg = Gemma4MTPConfig(assistant_model_path=args.official)
     draft = Gemma4MTPDraftModel(cfg).to(dev).eval()
     draft.load_assistant_weights(args.official)
+    draft = draft.to(torch.bfloat16)
     model = Gemma4MTPModel(
         draft_model=draft, mtp_num_steps=args.k,
         loss_decay_gamma=7.0, teacher_force=args.teacher_force,
-    ).to(dev).eval()
+    ).to(dev).to(torch.bfloat16).eval()
 
     K = args.k
     acc_num = torch.zeros(K, device=dev)   # sum(acc*count) per step
