@@ -44,6 +44,7 @@ def main() -> None:
     ap.add_argument("--target", required=True)
     ap.add_argument("--data", help="eval jsonl (conversations); overrides --dump")
     ap.add_argument("--prompt-key", default="conversations")
+    ap.add_argument("--chat-template", default="gemma")
     ap.add_argument("--num-prompts", type=int, default=3)
     ap.add_argument("--max-seq", type=int, default=2048)
     ap.add_argument("--dump", default="/tmp/vllm_draft_step0.pt")
@@ -58,35 +59,43 @@ def main() -> None:
 
     dev = args.device
 
-    # ---- build the list of prompt token sequences ----
+    # ---- build the list of prompt token sequences + REAL loss masks ----
     seqs = []
+    lmasks = []
     if args.data:
         import json
+        from transformers import AutoTokenizer
+        from torchspec.data.preprocessing import preprocess_conversations
+        from torchspec.data.template import TEMPLATE_REGISTRY
         tok = AutoTokenizer.from_pretrained(args.target, trust_remote_code=True)
+        ct = TEMPLATE_REGISTRY[args.chat_template]
+        rows = []
         with open(args.data) as f:
             for line in f:
-                if len(seqs) >= args.num_prompts:
+                if len(rows) >= args.num_prompts:
                     break
-                row = json.loads(line)
-                convs = row[args.prompt_key]
-                ids = tok.apply_chat_template(
-                    convs, tokenize=True, add_generation_prompt=False,
-                )
-                if hasattr(ids, "ids"):        # tokenizers.Encoding
-                    ids = ids.ids
-                elif hasattr(ids, "input_ids"):  # BatchEncoding
-                    ids = ids["input_ids"]
-                ids = list(ids)
-                ids = torch.tensor(ids[: args.max_seq], device=dev).long().view(1, -1)
-                if ids.shape[1] >= 8:
-                    seqs.append(ids)
-        print(f"loaded {len(seqs)} prompts from {args.data}")
+                rows.append(json.loads(line))
+        convs = [r[args.prompt_key] for r in rows]
+        out = preprocess_conversations(
+            tok, convs, ct, max_length=args.max_seq,
+            use_packed_loss_mask=False, include_attention_mask=False,
+        )
+        for ids, lm in zip(out["input_ids"], out["loss_mask"]):
+            ids_t = torch.tensor(ids, device=dev).long().view(1, -1)
+            lm_t = torch.tensor(lm, device=dev).long().view(1, -1)
+            if ids_t.shape[1] >= 8 and lm_t.sum() > 0:
+                seqs.append(ids_t)
+                lmasks.append(lm_t)
+        print(f"loaded {len(seqs)} prompts from {args.data} "
+              f"(real loss masks, answer-region only)")
     else:
         d = torch.load(args.dump, map_location="cpu")
         tgt_ids = d.get("target_token_ids")
         if tgt_ids is None:
             tgt_ids = d["input_ids"]
-        seqs.append(tgt_ids.to(dev).long().view(1, -1))
+        t = tgt_ids.to(dev).long().view(1, -1)
+        seqs.append(t)
+        lmasks.append(torch.ones_like(t))
         print(f"loaded 1 prompt from dump T={seqs[0].shape[1]}")
 
     # ---- HF target: hidden + shared_kv on the real sequence ----
@@ -116,14 +125,13 @@ def main() -> None:
     K = args.k
     acc_num = torch.zeros(K, device=dev)   # sum(acc*count) per step
     acc_den = torch.zeros(K, device=dev)   # sum(count) per step
-    for i, tgt_ids in enumerate(seqs):
+    for i, (tgt_ids, loss_mask) in enumerate(zip(seqs, lmasks)):
         attn = torch.ones_like(tgt_ids)
         with torch.no_grad():
             out = inner(input_ids=tgt_ids, attention_mask=attn,
                         use_cache=True, return_shared_kv_states=True)
             last_hidden = out.last_hidden_state.to(torch.bfloat16)
             shared_kv = out.shared_kv_states
-            loss_mask = torch.ones_like(tgt_ids)
             loss, acc, loss_ps, acc_ps, cnt_ps = model(
                 input_ids=tgt_ids,
                 target_last_hidden=last_hidden,
