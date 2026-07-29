@@ -189,6 +189,14 @@ def main() -> None:
             q_rot, _ = vrope.forward_native(pos1, q_flat, None)
             q_r = q_rot.view(1, nh, hd).transpose(0, 1)          # (nh,1,hd)
 
+            # ISOLATION: optionally replace my q with vLLM's dumped q_postrope
+            # to test whether the residual full-layer error is in q or attention.
+            import os as _osq
+            if _osq.environ.get("USE_VLLM_Q") == "1" and d.get("attn_dump") \
+                    and li < len(d["attn_dump"]):
+                vq = d["attn_dump"][li]["q_postrope"][s].to(dev).to(q_r.dtype)
+                q_r = vq.view(nh, hd).unsqueeze(1)               # (nh,1,hd)
+
             k, v = kv[lt]                                       # (N, kvh, hd)
             kvh = k.shape[1]
             # compare gathered K/V vs target's real full-layer K/V (dump)
