@@ -215,6 +215,15 @@ def main() -> None:
 
             k, v = kv[lt]                                       # (N, kvh, hd)
             kvh = k.shape[1]
+            # ISOLATION: for full layer, optionally use target's dumped K/V
+            # (known-correct) instead of Path-B gather, to confirm gather is the bug.
+            import os as _osk
+            if li == 3 and _osk.environ.get("USE_TARGET_KV") == "1" and d.get("tgt_fullkv"):
+                tkf = d["tgt_fullkv"][-1]["k"].to(dev)   # (Nt, 1024)
+                tvf = d["tgt_fullkv"][-1]["v"].to(dev)
+                nt = min(tkf.shape[0], k.shape[0])
+                k = tkf[:nt].view(nt, kvh, hd).to(k.dtype)
+                v = tvf[:nt].view(nt, kvh, hd).to(v.dtype)
             # compare gathered K/V vs target's real full-layer K/V (dump)
             if li == 3 and d.get("tgt_fullkv"):
                 tk = d["tgt_fullkv"][-1]["k"].to(dev).to(torch.float32)  # (Nt,1024)
