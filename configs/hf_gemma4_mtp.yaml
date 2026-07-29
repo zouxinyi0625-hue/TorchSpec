@@ -35,7 +35,7 @@ training:
   weight_decay: 0.01
   max_concurrent_batches: 1
   max_grad_norm: 1.0
-  max_seq_length: 2048
+  max_seq_length: 4096
   num_epochs: 3
   seed: 42
   training_num_gpus_per_node: 7
