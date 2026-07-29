@@ -42,24 +42,47 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--official", required=True)
     ap.add_argument("--target", required=True)
+    ap.add_argument("--data", help="eval jsonl (conversations); overrides --dump")
+    ap.add_argument("--prompt-key", default="conversations")
+    ap.add_argument("--num-prompts", type=int, default=3)
+    ap.add_argument("--max-seq", type=int, default=2048)
     ap.add_argument("--dump", default="/tmp/vllm_draft_step0.pt")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--k", type=int, default=4, help="MTP num steps")
     ap.add_argument("--teacher-force", action="store_true")
     args = ap.parse_args()
 
-    from transformers import AutoModelForCausalLM
+    from transformers import AutoModelForCausalLM, AutoTokenizer
     from torchspec.models.draft.gemma4_mtp import Gemma4MTPConfig, Gemma4MTPDraftModel
     from torchspec.models.gemma4_mtp import Gemma4MTPModel
 
     dev = args.device
-    d = torch.load(args.dump, map_location="cpu")
-    tgt_ids = d.get("target_token_ids")
-    if tgt_ids is None:
-        tgt_ids = d["input_ids"]
-    tgt_ids = tgt_ids.to(dev).long().view(1, -1)
-    T = tgt_ids.shape[1]
-    print(f"prompt T={T}")
+
+    # ---- build the list of prompt token sequences ----
+    seqs = []
+    if args.data:
+        import json
+        tok = AutoTokenizer.from_pretrained(args.target, trust_remote_code=True)
+        with open(args.data) as f:
+            for line in f:
+                if len(seqs) >= args.num_prompts:
+                    break
+                row = json.loads(line)
+                convs = row[args.prompt_key]
+                ids = tok.apply_chat_template(
+                    convs, tokenize=True, add_generation_prompt=False,
+                )
+                ids = torch.tensor(ids[: args.max_seq], device=dev).long().view(1, -1)
+                if ids.shape[1] >= 8:
+                    seqs.append(ids)
+        print(f"loaded {len(seqs)} prompts from {args.data}")
+    else:
+        d = torch.load(args.dump, map_location="cpu")
+        tgt_ids = d.get("target_token_ids")
+        if tgt_ids is None:
+            tgt_ids = d["input_ids"]
+        seqs.append(tgt_ids.to(dev).long().view(1, -1))
+        print(f"loaded 1 prompt from dump T={seqs[0].shape[1]}")
 
     # ---- HF target: hidden + shared_kv on the real sequence ----
     print("loading HF target ...")
@@ -73,13 +96,6 @@ def main() -> None:
         nxt = getattr(inner, attr, None)
         if nxt is not None and hasattr(nxt, "forward"):
             inner = nxt
-    attn = torch.ones_like(tgt_ids)
-    with torch.no_grad():
-        out = inner(input_ids=tgt_ids, attention_mask=attn,
-                    use_cache=True, return_shared_kv_states=True)
-    last_hidden = out.last_hidden_state.to(torch.bfloat16)   # (1,T,2816)
-    shared_kv = out.shared_kv_states                          # {lt:(K,V)} (1,h,T,d)
-    del target
 
     # ---- build the training model with OFFICIAL assistant weights ----
     print("loading OFFICIAL draft ...")
@@ -91,23 +107,37 @@ def main() -> None:
         loss_decay_gamma=7.0, teacher_force=args.teacher_force,
     ).to(dev).eval()
 
-    loss_mask = torch.ones_like(tgt_ids)
-    with torch.no_grad():
-        loss, acc, loss_ps, acc_ps, cnt_ps = model(
-            input_ids=tgt_ids,
-            target_last_hidden=last_hidden,
-            shared_kv_states=shared_kv,
-            loss_mask=loss_mask,
-            target_embed_weight=embed_w,
-            target_lm_head_weight=lm_head_w,
-        )
+    K = args.k
+    acc_num = torch.zeros(K, device=dev)   # sum(acc*count) per step
+    acc_den = torch.zeros(K, device=dev)   # sum(count) per step
+    for i, tgt_ids in enumerate(seqs):
+        attn = torch.ones_like(tgt_ids)
+        with torch.no_grad():
+            out = inner(input_ids=tgt_ids, attention_mask=attn,
+                        use_cache=True, return_shared_kv_states=True)
+            last_hidden = out.last_hidden_state.to(torch.bfloat16)
+            shared_kv = out.shared_kv_states
+            loss_mask = torch.ones_like(tgt_ids)
+            loss, acc, loss_ps, acc_ps, cnt_ps = model(
+                input_ids=tgt_ids,
+                target_last_hidden=last_hidden,
+                shared_kv_states=shared_kv,
+                loss_mask=loss_mask,
+                target_embed_weight=embed_w,
+                target_lm_head_weight=lm_head_w,
+            )
+        for k in range(K):
+            acc_num[k] += acc_ps[k] * cnt_ps[k]
+            acc_den[k] += cnt_ps[k]
+        print(f"  prompt {i} (T={tgt_ids.shape[1]}): "
+              f"step0_acc={acc_ps[0].item():.4f}")
 
     print("=" * 60)
-    print(f"OFFICIAL weights through TRAINING forward (teacher_force={args.teacher_force})")
-    print(f"overall acc = {acc.item():.4f}  loss = {loss.item():.4f}")
-    for k in range(len(acc_ps)):
-        print(f"  step {k}: acc={acc_ps[k].item():.4f} "
-              f"loss={loss_ps[k].item():.4f} count={int(cnt_ps[k].item())}")
+    print(f"OFFICIAL weights through TRAINING forward "
+          f"(teacher_force={args.teacher_force}, {len(seqs)} prompts)")
+    for k in range(K):
+        a = (acc_num[k] / acc_den[k].clamp_min(1)).item()
+        print(f"  step {k}: acc={a:.4f}  (count={int(acc_den[k].item())})")
     print("-" * 60)
     print("Expect step-0 acc HIGH (~0.8+) if training forward is aligned with")
     print("vLLM (official draft is known-good). Low pos0 => alignment still wrong.")
