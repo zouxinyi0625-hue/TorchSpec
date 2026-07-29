@@ -3,8 +3,8 @@
   "model_type": "gemma4_mtp",
   "_comment": "TorchSpec draft config for Gemma4 MTP (assistant). Wraps HF Gemma4AssistantForCausalLM. Dims mirror /tmp/models/gemma4/assistant: draft hidden=1024, 4 layers; target(backbone) hidden=2816. pre_projection in=5632=2*2816 (concat[target_embed(token), prev_hidden]); post_projection out=2816 (next-step prev_hidden). tie_word_embeddings, vocab=262144.",
 
-  "assistant_model_path": "/tmp/models/gemma4/assistant",
-  "target_model_path": "/tmp/models/gemma4/text_only",
+  "assistant_model_path": "$AZURE_ML_INPUT_UKWDATA/maiprofile/models/assistant",
+  "target_model_path": "$AZURE_ML_INPUT_UKWDATA/maiprofile/models/text_only",
 
   "hidden_size": 1024,
   "intermediate_size": 8192,

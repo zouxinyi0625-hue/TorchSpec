@@ -107,8 +107,17 @@ class Gemma4MTPConfig(PretrainedConfig):
         self.mtp_num_steps = mtp_num_steps
         self.use_shared_kv_states = use_shared_kv_states
         self.shared_kv_layer_types = tuple(shared_kv_layer_types)
-        self.assistant_model_path = assistant_model_path
-        self.target_model_path = target_model_path
+        # expand $ENV / ~ so configs can reference mount paths (e.g.
+        # $AZURE_ML_INPUT_UKWDATA/...) instead of hard-coded absolute paths.
+        import os as _os
+        self.assistant_model_path = (
+            _os.path.expanduser(_os.path.expandvars(assistant_model_path))
+            if assistant_model_path else assistant_model_path
+        )
+        self.target_model_path = (
+            _os.path.expanduser(_os.path.expandvars(target_model_path))
+            if target_model_path else target_model_path
+        )
         self.loss_objective = loss_objective
         self.loss_decay_gamma = loss_decay_gamma
         # Convenience: pre/post projection dims implied by the design.
