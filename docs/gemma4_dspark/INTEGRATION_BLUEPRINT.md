@@ -120,8 +120,23 @@ markov_w2: Linear(r, draft_vocab) # 投影成 draft-vocab bias，加到 base log
 | 3 | `torchspec/models/draft/dflash.py` | 改：`DFlashDraftModel` 支持 gemma4 embed(scaled)/layer 分派 | 中 | #1 |
 | 4 | `torchspec/training/dspark_trainer.py` | 改：加 gemma4 config 构造（或 Gemma4DSparkTrainer 子类） | 小 | #5 |
 | 5 | gemma4 dspark draft config 生成器/json | **新增**：从 target text_config 派生 | 小 | 抄 DeepSpec config.py |
-| 6 | 数据管线（online engine） | 确认/改：gemma4 target 采多层 hidden + last_hidden | 中 | qwen3 dspark 已有；gemma4 target 适配 |
+| 6 | 数据管线（online engine） | ✅ **已确认通（零新开发）**：gemma4 target 采多层 hidden + last_hidden | ~~中~~ 无 | 见下方确认 |
 | 7 | checkpoint 导出 | 对齐 vllm load_weights 命名 | 小 | #3 |
+
+### #6 数据管线确认结果（2026-07-29，最大不确定性已排除）
+
+**gemma4 target 采 dspark 要的多层 hidden + last_hidden，vllm 0.26 全链路支持，model-agnostic，零新开发。**
+
+| 环节 | 证据 |
+|------|------|
+| 多层 target hidden | TorchSpec `vllm_engine.py` 用 `aux_hidden_state_layer_ids`，无 gemma/qwen 特判 |
+| last_hidden（L1 蒸馏） | `vllm_engine.py:173-183` 自动 append final layer |
+| gemma4 主模型支持 aux hidden | vllm 0.26 `gemma4.py:1326-1363` 原生返回 `aux_hidden_states` |
+| extract_hidden_states + gemma4 | model-agnostic proposer；`speculative.py` 支持 |
+| 数据契约 | `hidden_states_list`（多层）+ `last_hidden_states`，qwen3 dspark 已用同套 |
+
+**配置即可**：`aux_hidden_states_layers=<target_layer_ids>` + `store_last_hidden_states=true`。
+**影响**：dense gemma4 dspark 唯一实质不确定性排除；剩下仅 backbone（#1，三重标尺）+ 接线（小改）。
 
 ### 数据契约（已确认匹配）
 `DSparkModel.forward(input_ids, hidden_states_list, loss_mask, lm_head_weight, last_hidden_states)`
