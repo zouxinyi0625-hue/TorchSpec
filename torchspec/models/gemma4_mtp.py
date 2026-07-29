@@ -137,9 +137,15 @@ class Gemma4MTPModel(nn.Module):
         position_ids = torch.arange(seqlen, device=device).unsqueeze(0).expand(bsz, -1)
 
         # step 0 prev_hidden = target's last hidden at each position (invariant 3).
+        # NOTE: hidden STAYS hidden_t (unchanged) — only the token + label shift.
         prev_hidden = target_last_hidden
-        # step 0 "last seen token" = the token AT position t (invariant 4 lookup).
-        cur_token = input_ids.clamp(0, V - 1)
+        # step 0 "last seen token" = token_{t+1} (the just-sampled next token),
+        # NOT token_t. vLLM/HF deploy feed embed(token_{t+1}) paired with hidden_t
+        # at anchor t (double iron-clad: vLLM proposer dump input_ids[t]==
+        # target_token_ids[t+1], and HF 5.9 candidate_generator input_ids[:,-1:]).
+        # Training previously fed token_t (off-by-one) → pos0 accept halved.
+        cur_token_pos = (torch.arange(seqlen, device=device) + 1).clamp(max=seqlen - 1)
+        cur_token = input_ids[:, cur_token_pos].clamp(0, V - 1)
 
         loss_per_step: List[torch.Tensor] = []
         acc_per_step: List[torch.Tensor] = []
@@ -171,14 +177,14 @@ class Gemma4MTPModel(nn.Module):
                 attention_mask=attention_mask,
             )  # logits (B,T,V), last_hidden (B,T,2816)
 
-            # --- labels (design.md invariant alignment) ---
-            # At anchor position t, drafting step k predicts token_{t+k+1}.
-            # In the TARGET model, hidden at position (t+k) is what predicts
-            # token_{t+k+1}: target_p = softmax(lm_head(target_hidden[t+k])).
-            # So the supervising hidden uses shift=k, while the label token id
-            # (for teacher forcing + bounds) sits at t+k+1.
-            hidden_pos = torch.arange(seqlen, device=device) + k
-            token_pos = torch.arange(seqlen, device=device) + (k + 1)
+            # --- labels (aligned to the vLLM/deploy shift) ---
+            # After the +1 token shift, anchor position t consumes (token_{t+1},
+            # hidden_t) and PREDICTS token_{t+k+2} at drafting step k. The target
+            # hidden that predicts token_{t+k+2} sits at position (t+k+1), so the
+            # supervising hidden uses shift=k+1 and the label token id sits at
+            # t+k+2 (both +1 vs the old off-by-one alignment).
+            hidden_pos = torch.arange(seqlen, device=device) + (k + 1)
+            token_pos = torch.arange(seqlen, device=device) + (k + 2)
             valid_bounds = token_pos < seqlen           # label token must exist
             safe_hidden_pos = hidden_pos.clamp(max=seqlen - 1)
             safe_token_pos = token_pos.clamp(max=seqlen - 1)
@@ -233,10 +239,13 @@ class Gemma4MTPModel(nn.Module):
             # --- recurrence for next step ---
             prev_hidden = last_hidden  # own output fed back (invariant 3)
             if self.teacher_force:
-                # feed ground-truth token t+k+1 (D2 default)
+                # feed the just-predicted ground-truth token (token_{t+k+2}, at
+                # safe_token_pos after the +1 shift) — the teacher-forced analogue
+                # of vLLM feeding the draft's own predicted next token at k>0.
                 cur_token = input_ids[:, safe_token_pos].clamp(0, V - 1)
             else:
-                # free-run: draft's own argmax (matches inference exactly)
+                # free-run: draft's own argmax (matches vLLM inference exactly,
+                # which unconditionally feeds the draft's own prediction at k>0).
                 cur_token = logits.argmax(-1).clamp(0, V - 1)
 
         loss = total_loss / total_count.clamp_min(1.0)

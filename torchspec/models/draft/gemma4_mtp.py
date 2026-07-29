@@ -148,6 +148,23 @@ class Gemma4MTPDraftModel(PreTrainedModel):
 
         self.assistant = self._build_hf_assistant(config)
 
+        # Strip forward (Option X): the HF assistant's PARALLEL forward
+        # (create_attention_masks) was proven != vLLM (trains well, deploys at
+        # half accept). Gemma4MTPStripForward runs the vLLM-equivalent single-
+        # step-per-position attention over the SAME weights. Lazily built on
+        # first forward (needs the module on-device). Toggle with
+        # ``use_strip_forward`` (default True); set False to fall back to the HF
+        # parallel path for A/B.
+        self.use_strip_forward = bool(getattr(config, "use_strip_forward", True))
+        sw = 1024
+        tc = getattr(config, "text_config", None)
+        if isinstance(tc, dict):
+            sw = tc.get("sliding_window", 1024)
+        elif tc is not None:
+            sw = getattr(tc, "sliding_window", 1024)
+        self._strip_window = sw
+        self._strip_fwd = None
+
     # Convenience accessors — these are *properties*, not registered submodules,
     # so the underlying parameters live under a single name (self.assistant.*)
     # in state_dict. Registering them as module attributes (self.pre_projection
@@ -259,6 +276,22 @@ class Gemma4MTPDraftModel(PreTrainedModel):
             last_hidden_state: (B, S, backbone_hidden) — post_projection output,
                 to be fed back as prev_hidden on the next step (invariant 3).
         """
+        if self.use_strip_forward:
+            if self._strip_fwd is None:
+                from torchspec.models.draft.gemma4_mtp_strip_forward import (
+                    Gemma4MTPStripForward,
+                )
+                self._strip_fwd = Gemma4MTPStripForward(
+                    self.assistant, sliding_window=self._strip_window,
+                    rope_impl="hf",
+                )
+            logits, last_hidden = self._strip_fwd(
+                inputs_embeds=inputs_embeds,
+                position_ids=position_ids,
+                shared_kv_states=shared_kv_states,
+            )
+            return logits, last_hidden
+
         out = self.assistant(
             inputs_embeds=inputs_embeds,
             position_ids=position_ids,
