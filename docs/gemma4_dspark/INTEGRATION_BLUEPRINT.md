@@ -171,6 +171,17 @@ markov_w2: Linear(r, draft_vocab) # 投影成 draft-vocab bias，加到 base log
 
 ---
 
+## 7.5 关键核对：rope（风险已排除，2026-07-29）
+
+对着 vllm-026 `gemma4_mtp.py::Gemma4MTPAttention`（gemma4_dspark 继承它）核对：
+- **rope = `get_rope(self.head_dim, ...)` → rotary_dim = 完整 head_dim，NOT partial**。
+  （MTP 时 target full 层的 partial_rotary 是 *target* 特性；dspark **draft** 全是 full_attention 层，用标准完整 head_dim rope。）
+- `is_neox_style=True`；scaling=1.0；q_norm/k_norm=RMSNorm(head_dim)；v_norm=RMSNorm(no weight)。
+- rope_theta 按 layer_type 取：draft 全 full → 用默认 `rope_parameters` 的 rope_theta（sliding 才用 rope_local_base_freq）。
+
+→ 本仓库 `dspark_gemma4_backbone.py` 的 `Gemma4DSparkRotaryEmbedding`（完整 head_dim rope）**方向正确**。
+待验证时仍需对拍 argmax（蓝图第 3 步）。
+
 ## 8. MoE 进阶（后续独立阶段）
 
 - draft 仍 dense（同上 backbone，维度对齐 26B-a4b target）
