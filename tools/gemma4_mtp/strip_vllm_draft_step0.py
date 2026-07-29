@@ -211,6 +211,18 @@ def main() -> None:
             attn_w = attn_w.softmax(dim=-1)
             attn_o = torch.matmul(attn_w, v_t)                 # (nh,1,hd)
             attn_o = attn_o.transpose(0, 1).reshape(1, nh * hd)
+            # compare q(post-rope) and attn_output (pre o_proj) vs vLLM dump
+            attn_dump = d.get("attn_dump")
+            if attn_dump and li < len(attn_dump):
+                ad = attn_dump[li]
+                vq = ad["q_postrope"][s].to(dev).to(torch.float32)      # (nh*hd,)
+                myq = q_r.transpose(0, 1).reshape(-1).to(torch.float32)
+                cq = F.cosine_similarity(myq.unsqueeze(0), vq.unsqueeze(0), dim=-1).item()
+                vo = ad["attn_output"][s].to(dev).to(torch.float32)
+                myo = attn_o.reshape(-1).to(torch.float32)
+                co = F.cosine_similarity(myo.unsqueeze(0), vo.unsqueeze(0), dim=-1).item()
+                print(f"  [attn parity L{li}] q_cos={cq:.4f} attn_out_cos={co:.4f} "
+                      f"my_kvheads={kvh} vllm_kvheads={ad['num_kv_heads']}")
             attn_o = attn.o_proj(attn_o)                       # (1,H)
 
             # write back only sampled position; other positions unchanged (we
