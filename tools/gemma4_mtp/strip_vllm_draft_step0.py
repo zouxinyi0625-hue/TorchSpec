@@ -197,8 +197,12 @@ def main() -> None:
                 vqpost = d["attn_dump"][li]["q_postrope"][s].to(dev).to(torch.float32)
                 myqpost = q_rot[0].to(torch.float32)
                 cpost = F.cosine_similarity(myqpost.unsqueeze(0), vqpost.unsqueeze(0), dim=-1).item()
+                maxdiff = (myqpost - vqpost).abs().max().item()
+                # per-head cos
+                mh = myqpost.view(nh, hd); vh = vqpost.view(nh, hd)
+                phc = F.cosine_similarity(mh, vh, dim=-1)
                 print(f"  [q isolate L3] prerope_cos={cpre:.4f} postrope_cos={cpost:.4f} "
-                      f"my_prenorm={myqp.norm():.3f} vllm_prenorm={vqp.norm():.3f} "
+                      f"maxdiff={maxdiff:.4f} perhead_cos_min={phc.min():.4f} "
                       f"my_postnorm={myqpost.norm():.3f} vllm_postnorm={vqpost.norm():.3f}")
 
             # ISOLATION: optionally replace my q with vLLM's dumped q_postrope
