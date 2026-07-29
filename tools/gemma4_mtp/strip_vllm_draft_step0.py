@@ -234,12 +234,8 @@ def main() -> None:
             rep = nh // kvh
             k_t = k_t.repeat_interleave(rep, dim=0)             # (nh,N,hd)
             v_t = v_t.repeat_interleave(rep, dim=0)
-            # single-query attention. Use fp32 for the score matmul: full layer
-            # has head_dim=512 and scaling=1.0, so q·k is large and softmax is
-            # very sensitive to bf16 rounding.
-            vscale = d["attn_dump"][li].get("scaling", 1.0) if d.get("attn_dump") else 1.0
-            q32 = q_r.to(torch.float32); k32 = k_t.to(torch.float32); v32 = v_t.to(torch.float32)
-            attn_w = torch.matmul(q32, k32.transpose(-1, -2)) * vscale   # (nh,1,N)
+            # single-query attention, scaling=1.0
+            attn_w = torch.matmul(q_r, k_t.transpose(-1, -2)) * 1.0   # (nh,1,N)
             # sliding-window mask: sliding layers only attend the last
             # `sliding_window` positions up to the query position s.
             sw = getattr(attn, "sliding_window", None) or args.sliding_window
@@ -250,8 +246,8 @@ def main() -> None:
                 mask[0, lo:s + 1] = 0.0
                 attn_w = attn_w + mask
             attn_w = attn_w.softmax(dim=-1)
-            attn_o = torch.matmul(attn_w, v32)                 # (nh,1,hd)
-            attn_o = attn_o.transpose(0, 1).reshape(1, nh * hd).to(q_r.dtype)
+            attn_o = torch.matmul(attn_w, v_t)                 # (nh,1,hd)
+            attn_o = attn_o.transpose(0, 1).reshape(1, nh * hd)
             # compare q(post-rope) and attn_output (pre o_proj) vs vLLM dump
             attn_dump = d.get("attn_dump")
             if attn_dump and li < len(attn_dump):
