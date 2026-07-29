@@ -6,10 +6,10 @@
 # Each: warm-start from official assistant, strip forward, max_seq_length=4096.
 # Checkpoints and logs go to SEPARATE paths so nothing collides.
 #
-# Usage:
+# Usage (AML browser terminal keeps the session alive; no nohup needed):
 #   cd $WD/TorchSpec && bash run.sh
-# Run it detached so it survives logout:
-#   cd $WD/TorchSpec && nohup bash run.sh > run_overnight.out 2>&1 &
+# Everything you see in the terminal is ALSO written to the master log
+# (train_logs/run_master_<stamp>.log), and each run additionally to its own log.
 #
 set -uo pipefail
 
@@ -25,6 +25,11 @@ LOG_ROOT="$WD/TorchSpec/train_logs"
 mkdir -p "$LOG_ROOT"
 
 STAMP=$(date +%Y%m%d_%H%M%S)
+
+# Mirror everything (this script's stdout+stderr) to a master log AND the terminal.
+MASTER_LOG="$LOG_ROOT/run_master_${STAMP}.log"
+exec > >(tee -a "$MASTER_LOG") 2>&1
+echo "[$(date '+%F %T')] run.sh started; master log = $MASTER_LOG"
 
 run_one () {
     local name="$1"           # run name
