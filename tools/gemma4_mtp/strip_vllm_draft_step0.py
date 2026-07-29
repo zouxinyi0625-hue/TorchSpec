@@ -187,7 +187,7 @@ def main() -> None:
             q_flat = q.reshape(1, nh * hd)                       # (1, nh*hd)
             pos1 = positions[s:s + 1]                            # (1,)
             q_rot, _ = vrope.forward_native(pos1, q_flat, None)
-            q_r = q_rot.view(1, nh, hd).transpose(0, 1)          # (nh,1,hd)
+            q_r = q_rot[0].view(nh, hd).unsqueeze(1)             # (nh,1,hd) - match USE_VLLM_Q path
 
             # isolate q_norm vs rope: compare my pre-rope q vs vLLM's pre-rope q
             if li == 3 and d.get("attn_dump") and d["attn_dump"][li].get("q_prerope") is not None:
