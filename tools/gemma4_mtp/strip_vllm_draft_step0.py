@@ -229,6 +229,18 @@ def main() -> None:
                 # per-head cos at the sampled position
                 ks = k[s].to(torch.float32); tks = tk_h[s]
                 phk = F.cosine_similarity(ks, tks, dim=-1)
+                # try alternative interpretations of target's flat-1024 layout
+                tflat = tk[s]                              # (1024,)
+                gflat = k[s].reshape(-1).to(torch.float32) # (1024,) gather order
+                # A: does gather match target as-is?
+                cA = F.cosine_similarity(gflat.unsqueeze(0), tflat.unsqueeze(0), dim=-1).item()
+                # B: target reshaped (2,512) then transpose to (512,2) flatten
+                tB = tflat.view(kvh, hd).t().reshape(-1)
+                cB = F.cosine_similarity(gflat.unsqueeze(0), tB.unsqueeze(0), dim=-1).item()
+                # C: gather transposed heads
+                gC = k[s].to(torch.float32).flip(0).reshape(-1)  # head swap
+                cC = F.cosine_similarity(gC.unsqueeze(0), tflat.unsqueeze(0), dim=-1).item()
+                print(f"  [layout test] flat_cos_A={cA:.3f} transpose_B={cB:.3f} headswap_C={cC:.3f}")
                 print(f"  [gather vs target K/V] k_maxdiff={kdiff:.4f} v_maxdiff={vdiff:.4f} "
                       f"perhead_k_cos@s={[round(x,3) for x in phk.tolist()]} "
                       f"gather={tuple(k.shape)} target={tuple(tk.shape)}")
