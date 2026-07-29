@@ -299,3 +299,127 @@ def _resolve_rope_theta(config: PretrainedConfig) -> float:
             if key in rope_params:
                 return float(rope_params[key])
     return float(getattr(config, "rope_theta", 1_000_000.0))
+
+
+class Gemma4DSparkDraftModel(nn.Module):
+    """Gemma4 DSpark draft backbone (Model level), interface-compatible with
+    :class:`torchspec.models.draft.dspark.DSparkDraftModel`.
+
+    Provides the exact contract the DFlash/DSpark training wrapper calls:
+      - ``extract_context_feature(hidden_states_list)`` -> context_feature
+      - ``forward(draft_input_ids, context_feature, draft_position_ids,
+        context_position_ids, block_mask, noise_embedding)`` -> pre-norm-then-norm
+        draft hidden states
+      - ``embed_tokens`` / ``load_embedding`` / ``freeze_embedding``
+      - ``markov_head`` / ``confidence_head`` (+ ``confidence_head_with_markov``)
+
+    Gemma4 vs qwen3 DFlash backbone:
+      - scaled word embedding: ``embed_tokens(ids) * sqrt(hidden_size)``.
+      - context projection ``fc``: Linear(hidden*num_target_layers -> hidden),
+        followed by ``hidden_norm`` (RMSNorm), matching vLLM ``Gemma4DSparkModel``.
+      - Gemma4 decoder layers with dual-source KV.
+    """
+
+    def __init__(self, config: PretrainedConfig):
+        super().__init__()
+        self.config = config
+        self.hidden_size = int(config.hidden_size)
+        self.num_layers = int(config.num_hidden_layers)
+
+        self.num_target_layers = int(getattr(config, "num_target_layers", 5))
+        target_hidden_size = int(getattr(config, "target_hidden_size", self.hidden_size))
+        self.target_hidden_size = target_hidden_size
+        self.mask_token_id = int(getattr(config, "mask_token_id", config.vocab_size - 1))
+
+        target_num_hidden = int(getattr(config, "target_num_hidden_layers", 36))
+        self.target_layer_ids = getattr(config, "target_layer_ids", None)
+        if self.target_layer_ids is None:
+            self.target_layer_ids = build_target_layer_ids(
+                self.num_target_layers, target_num_hidden
+            )
+
+        eps = float(config.rms_norm_eps)
+
+        # scaled word embedding (gemma): embed_tokens(ids) * sqrt(hidden)
+        self.embed_tokens = nn.Embedding(config.vocab_size, self.hidden_size)
+        self.register_buffer(
+            "embed_scale",
+            torch.tensor(self.hidden_size**0.5, dtype=torch.float32),
+            persistent=False,
+        )
+
+        # context feature projection: concat(num_target_layers hidden) -> hidden
+        proj_input_dim = self.num_target_layers * target_hidden_size
+        self.fc = nn.Linear(proj_input_dim, self.hidden_size, bias=False)
+        self.hidden_norm = Gemma4DSparkRMSNorm(self.hidden_size, eps=eps)
+
+        self.layers = nn.ModuleList(
+            [Gemma4DSparkDecoderLayer(config) for _ in range(self.num_layers)]
+        )
+        self.norm = Gemma4DSparkRMSNorm(self.hidden_size, eps=eps)
+
+        # ---- DSpark heads (reuse the architecture-agnostic implementations) ----
+        from torchspec.models.draft.dspark import AcceptRatePredictor, build_markov_head
+
+        self.markov_rank = int(getattr(config, "markov_rank", 0))
+        self.confidence_head_with_markov = bool(
+            getattr(config, "confidence_head_with_markov", True)
+        )
+        self.markov_head = build_markov_head(config)
+        self.confidence_head: Optional[nn.Module] = None
+        if getattr(config, "enable_confidence_head", False):
+            conf_input_dim = self.hidden_size
+            if self.confidence_head_with_markov:
+                if self.markov_head is None:
+                    raise ValueError(
+                        "confidence_head_with_markov=True requires a Markov head "
+                        "(markov_rank > 0)."
+                    )
+                conf_input_dim += self.markov_rank
+            self.confidence_head = AcceptRatePredictor(conf_input_dim)
+
+    # ------------------------------------------------------------------
+    def extract_context_feature(self, all_hidden_states: List[torch.Tensor]) -> torch.Tensor:
+        """concat(multi-layer target hidden) -> fc -> hidden_norm."""
+        concatenated = torch.cat(all_hidden_states, dim=-1).to(self.fc.weight.dtype)
+        return self.hidden_norm(self.fc(concatenated))
+
+    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+        return self.embed_tokens(input_ids) * self.embed_scale.to(self.embed_tokens.weight.dtype)
+
+    def forward(
+        self,
+        draft_input_ids: Optional[torch.Tensor],
+        context_feature: torch.Tensor,
+        draft_position_ids: torch.Tensor,
+        context_position_ids: torch.Tensor,
+        block_mask=None,
+        noise_embedding: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if noise_embedding is not None:
+            draft_hidden = noise_embedding.to(context_feature.dtype)
+        else:
+            draft_hidden = self.embed_input_ids(draft_input_ids).to(context_feature.dtype)
+
+        for layer in self.layers:
+            draft_hidden = layer(
+                draft_hidden=draft_hidden,
+                context_hidden=context_feature,
+                draft_position_ids=draft_position_ids,
+                context_position_ids=context_position_ids,
+                block_mask=block_mask,
+            )
+        return self.norm(draft_hidden)
+
+    # ------------------------------------------------------------------
+    def freeze_embedding(self) -> None:
+        self.embed_tokens.weight.requires_grad = False
+
+    @torch.no_grad()
+    def load_embedding(
+        self, model_path: str, embedding_key: str = "model.embed_tokens.weight"
+    ) -> None:
+        """Load token embedding from the target checkpoint (reuses DFlash loader)."""
+        from torchspec.models.draft.dflash import DFlashDraftModel
+
+        DFlashDraftModel.load_embedding(self, model_path, embedding_key=embedding_key)

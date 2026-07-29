@@ -56,6 +56,21 @@ class DSparkTrainer(DFlashTrainer):
     # ------------------------------------------------------------------
 
     def _build_draft_model(self, config):
+        # Dispatch backbone by architecture: gemma4 dspark uses the parallel
+        # gemma4 backbone (gemma4 attention ops); everything else uses the
+        # qwen3-style DSparkDraftModel.
+        model_type = str(getattr(config, "model_type", "") or "")
+        architectures = getattr(config, "architectures", None) or []
+        is_gemma4 = (
+            "gemma4" in model_type
+            or any("Gemma4DSpark" in a for a in architectures)
+        )
+        if is_gemma4:
+            from torchspec.models.draft.dspark_gemma4_backbone import (
+                Gemma4DSparkDraftModel,
+            )
+
+            return Gemma4DSparkDraftModel(config)
         return DSparkDraftModel(config)
 
     def _build_training_wrapper(self, draft_model):
