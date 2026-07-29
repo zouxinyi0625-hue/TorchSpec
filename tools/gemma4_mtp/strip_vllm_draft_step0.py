@@ -217,17 +217,21 @@ def main() -> None:
             kvh = k.shape[1]
             # compare gathered K/V vs target's real full-layer K/V (dump)
             if li == 3 and d.get("tgt_fullkv"):
-                tk = d["tgt_fullkv"][-1]["k"].to(dev).to(torch.float32)  # (Nt,2,512)
+                tk = d["tgt_fullkv"][-1]["k"].to(dev).to(torch.float32)  # (Nt,1024)
                 tv = d["tgt_fullkv"][-1]["v"].to(dev).to(torch.float32)
                 nmin = min(tk.shape[0], k.shape[0])
-                kc = F.cosine_similarity(
-                    k[:nmin].reshape(nmin, -1).to(torch.float32),
-                    tk[:nmin].reshape(nmin, -1), dim=-1).mean().item()
-                vc = F.cosine_similarity(
-                    v[:nmin].reshape(nmin, -1).to(torch.float32),
-                    tv[:nmin].reshape(nmin, -1), dim=-1).mean().item()
-                print(f"  [gather vs target K/V] k_cos={kc:.4f} v_cos={vc:.4f} "
-                      f"gather_shape={tuple(k.shape)} target_shape={tuple(tk.shape)}")
+                # reshape target K to (Nt, heads, dim) to match gather layout
+                tk_h = tk.view(tk.shape[0], kvh, hd)
+                tv_h = tv.view(tv.shape[0], kvh, hd)
+                # strict elementwise diff (not just global cos)
+                kdiff = (k[:nmin].to(torch.float32) - tk_h[:nmin]).abs().max().item()
+                vdiff = (v[:nmin].to(torch.float32) - tv_h[:nmin]).abs().max().item()
+                # per-head cos at the sampled position
+                ks = k[s].to(torch.float32); tks = tk_h[s]
+                phk = F.cosine_similarity(ks, tks, dim=-1)
+                print(f"  [gather vs target K/V] k_maxdiff={kdiff:.4f} v_maxdiff={vdiff:.4f} "
+                      f"perhead_k_cos@s={[round(x,3) for x in phk.tolist()]} "
+                      f"gather={tuple(k.shape)} target={tuple(tk.shape)}")
             k_t = k.transpose(0, 1)                             # (kvh, N, hd)
             v_t = v.transpose(0, 1)
             # GQA: repeat kv heads to nh
