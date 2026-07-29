@@ -34,6 +34,28 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _find_module_with(root: nn.Module, attr: str):
+    """BFS for the first submodule exposing ``attr`` (layout-agnostic)."""
+    q = [root]
+    while q:
+        x = q.pop(0)
+        if hasattr(x, attr):
+            return getattr(x, attr)
+        q.extend(list(x.children()))
+    raise AttributeError(f"no submodule with attribute {attr!r}")
+
+
+def _find_layers(root: nn.Module):
+    """BFS for the decoder-layer ModuleList (the one holding self_attn layers)."""
+    q = [root]
+    while q:
+        x = q.pop(0)
+        if isinstance(x, nn.ModuleList) and len(x) > 0 and hasattr(x[0], "self_attn"):
+            return x
+        q.extend(list(x.children()))
+    raise AttributeError("no decoder-layer ModuleList found")
+
+
 def build_vllm_ropes(device, dtype=torch.bfloat16):
     """Build vLLM's own rope per layer-type (exact partial-rotary math).
 
@@ -77,12 +99,21 @@ class Gemma4MTPStripForward(nn.Module):
         self.sliding_window = sliding_window
         self._ropes = None  # lazily built on first forward (needs device)
 
-        # locate submodules on the HF assistant
-        model = hf_assistant.model  # Gemma4AssistantModel
-        self.pre_projection = model.pre_projection
-        self.layers = model.layers
-        self.final_norm = model.norm
-        self.post_projection = hf_assistant.post_projection
+        # locate submodules by search (HF layout varies across versions), NOT by
+        # hard-coded paths. Mirrors the validated strip script.
+        self.pre_projection = _find_module_with(hf_assistant, "pre_projection")
+        self.layers = _find_layers(hf_assistant)
+        # parent module holding both .layers and .norm carries the final norm
+        parent = None
+        q = [hf_assistant]
+        while q:
+            x = q.pop(0)
+            if hasattr(x, "layers") and hasattr(x, "norm"):
+                parent = x
+                break
+            q.extend(list(x.children()))
+        self.final_norm = parent.norm
+        self.post_projection = _find_module_with(hf_assistant, "post_projection")
         self.lm_head = hf_assistant.get_output_embeddings()
 
     def _ropes_for(self, device, dtype):
