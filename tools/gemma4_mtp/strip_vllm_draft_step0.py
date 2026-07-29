@@ -255,8 +255,15 @@ def main() -> None:
                 cm = F.cosine_similarity(ao_m.reshape(1,-1).float(), vo.reshape(1,-1), dim=-1).item()
                 cv = F.cosine_similarity(ao_v.reshape(1,-1).float(), vo.reshape(1,-1), dim=-1).item()
                 eqmax = (q_r - vq_r).abs().max().item()
+                # per-head cos of vLLM-q attn output vs vLLM dump
+                ao_v_h = ao_v.view(nh, hd); vo_h = vo.view(nh, hd)
+                phc = F.cosine_similarity(ao_v_h, vo_h, dim=-1)
                 print(f"  [decisive L3] myq_attn_cos={cm:.4f} vllmq_attn_cos={cv:.4f} "
                       f"q_r_vs_vq_maxdiff={eqmax:.5f}")
+                print(f"  [perhead ao_v vs vo] cos={[round(x,2) for x in phc.tolist()]}")
+                # also: attn weight argmax position per head (where does q attend?)
+                awv = aw_v.squeeze(1)   # (nh, N)
+                print(f"  [attn argmax pos] {awv.argmax(-1).tolist()}")
             # sliding-window mask: sliding layers only attend the last
             # `sliding_window` positions up to the query position s.
             sw = getattr(attn, "sliding_window", None) or args.sliding_window
