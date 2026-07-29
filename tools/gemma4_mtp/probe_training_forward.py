@@ -72,6 +72,11 @@ def main() -> None:
                 ids = tok.apply_chat_template(
                     convs, tokenize=True, add_generation_prompt=False,
                 )
+                if hasattr(ids, "ids"):        # tokenizers.Encoding
+                    ids = ids.ids
+                elif hasattr(ids, "input_ids"):  # BatchEncoding
+                    ids = ids["input_ids"]
+                ids = list(ids)
                 ids = torch.tensor(ids[: args.max_seq], device=dev).long().view(1, -1)
                 if ids.shape[1] >= 8:
                     seqs.append(ids)
