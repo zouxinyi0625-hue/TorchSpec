@@ -93,11 +93,15 @@ class Gemma4MTPStripForward(nn.Module):
     forward math is replaced.
     """
 
-    def __init__(self, hf_assistant: nn.Module, sliding_window: int = 1024):
+    def __init__(self, hf_assistant: nn.Module, sliding_window: int = 1024,
+                 rope_impl: str = "vllm"):
         super().__init__()
         self.m = hf_assistant  # Gemma4AssistantForCausalLM
         self.sliding_window = sliding_window
+        self.rope_impl = rope_impl  # 'vllm' or 'hf'
         self._ropes = None  # lazily built on first forward (needs device)
+        # the draft's own HF rotary (used when rope_impl='hf')
+        self.hf_rotary = _find_module_with(hf_assistant, "rotary_emb")
 
         # locate submodules by search (HF layout varies across versions), NOT by
         # hard-coded paths. Mirrors the validated strip script.
@@ -121,6 +125,12 @@ class Gemma4MTPStripForward(nn.Module):
             self._ropes = build_vllm_ropes(device, dtype)
         return self._ropes
 
+    def _hf_rotary(self, q, position_ids, layer_type):
+        """Draft's own HF rotary_emb -> (cos, sin). Gemma4 rotary selects the
+        per-layer-type inv_freq via the ``layer_type`` kwarg."""
+        # HF Gemma4TextRotaryEmbedding.forward(x, position_ids, layer_type=...)
+        return self.hf_rotary(q, position_ids, layer_type=layer_type)
+
     def forward(
         self,
         inputs_embeds: torch.Tensor,     # (B, T, 2*backbone) = cat[tok_emb*scale, hidden]
@@ -131,7 +141,7 @@ class Gemma4MTPStripForward(nn.Module):
         """Return (logits (B,T,V), backbone_hidden (B,T,backbone))."""
         B, T, _ = inputs_embeds.shape
         device = inputs_embeds.device
-        ropes = self._ropes_for(device, inputs_embeds.dtype)
+        ropes = None if self.rope_impl == "hf" else self._ropes_for(device, inputs_embeds.dtype)
 
         h = self._maybe_tuple(self.pre_projection(inputs_embeds))[0]  # (B,T,H)
 
@@ -148,11 +158,23 @@ class Gemma4MTPStripForward(nn.Module):
             q = self._maybe_tuple(attn.q_proj(x))[0]          # (B,T,nh*hd)
             q = q.view(B, T, nh, hd)
             q = attn.q_norm(q)                                # (B,T,nh,hd)
-            # rope: vLLM get_rope.forward_native expects (num_tokens, nh*hd)
-            q_flat = q.reshape(B * T, nh * hd)
-            pos_flat = position_ids.reshape(B * T)
-            q_rot, _ = ropes[lt].forward_native(pos_flat, q_flat, None)
-            q_rot = q_rot.view(B, T, nh, hd)                  # (B,T,nh,hd)
+            # rope. Two impls (selected by self.rope_impl):
+            #   'vllm': vLLM get_rope.forward_native (exact deploy math)
+            #   'hf'  : the draft's own HF rotary_emb + apply_rotary_pos_emb
+            if self.rope_impl == "hf":
+                from transformers.models.gemma4.modeling_gemma4 import (
+                    apply_rotary_pos_emb,
+                )
+                cos, sin = self._hf_rotary(q, position_ids, layer_type=lt)
+                # HF q layout (B, nh, T, hd); apply then back to (B,T,nh,hd)
+                q_bt = q.permute(0, 2, 1, 3)                   # (B,nh,T,hd)
+                q_rot = apply_rotary_pos_emb(q_bt, cos, sin, unsqueeze_dim=1)
+                q_rot = q_rot.permute(0, 2, 1, 3)             # (B,T,nh,hd)
+            else:
+                q_flat = q.reshape(B * T, nh * hd)
+                pos_flat = position_ids.reshape(B * T)
+                q_rot, _ = ropes[lt].forward_native(pos_flat, q_flat, None)
+                q_rot = q_rot.view(B, T, nh, hd)              # (B,T,nh,hd)
 
             # shared_kv: (B, kvh, T_kv, dim)
             k, v = shared_kv_states[lt]
@@ -232,6 +254,8 @@ def _main():
     ap.add_argument("--use-target-kv", action="store_true",
                     help="use target's dumped full-layer K/V (known-correct) "
                          "instead of Path-B gather for the full layer")
+    ap.add_argument("--rope", choices=["vllm", "hf"], default="vllm",
+                    help="rope implementation: vllm get_rope or HF apply_rotary")
     args = ap.parse_args()
 
     from transformers import AutoModelForCausalLM, Gemma4AssistantForCausalLM
@@ -279,7 +303,7 @@ def _main():
     print("loading draft ...")
     draft = Gemma4AssistantForCausalLM.from_pretrained(
         args.official, dtype=torch.bfloat16).to(dev).eval()
-    fwd = Gemma4MTPStripForward(draft, sliding_window=1024).to(dev).eval()
+    fwd = Gemma4MTPStripForward(draft, sliding_window=1024, rope_impl=args.rope).to(dev).eval()
 
     pos = positions.unsqueeze(0)
     with torch.no_grad():
@@ -288,7 +312,7 @@ def _main():
         top5 = logits[0, s].topk(5).indices.tolist()
 
     print("=" * 60)
-    print(f"strip-forward (batch) argmax @pos {s}: {argmax_s}")
+    print(f"strip-forward (batch, rope={args.rope}) argmax @pos {s}: {argmax_s}")
     print(f"top5: {top5}")
     print(f"vLLM wants: {vllm_draft}")
     print("-" * 60)
