@@ -64,6 +64,22 @@ HF 导出：`Xinyi0625/gemma4_26ba4b_mtp_layer1_4096_s2269` · `Xinyi0625/gemma4
 
 同规律：**accept 89→93、TPOT −3.5% 更好，饱和 bench 吞吐仍未涨**（trained duration 310s 属饱和噪声）。spec=1 accept_len 上限=2，收益空间比 spec=5 小；pos0 93% 与 spec=5 的 pos0 90.75% 一致，印证 draft 在首 token 上确实更强。
 
+### max-concurrency=32（低并发, spec=1, layer1）— 吞吐仍未涨
+
+| conc=32 spec=1 | baseline (官方) | trained layer1 |
+|--------|:---:|:---:|
+| accept % | 89.18 | **92.85** ✅ |
+| accept_len (上限2) | 1.89 | **1.93** |
+| TPOT ms（↓好） | 33.74 | **32.70** ✅ | 
+| out tok/s | 907.0 | 920.4 (+1.4%) |
+| duration s | 338.11 | 336.02 |
+
+**降到 conc=32 吞吐依旧几乎不动（+1.4%），原因叠加两点：**
+1. **26B 模型 + 8192 长输出，conc=32 仍近饱和**：TPOT 已降到 32ms（单请求很快），但 32 路并发 × 26B 前向仍吃满算力，无富余给投机收益转成吞吐。
+2. **spec=1 收益空间本就极小**：accept_len 上限=2，draft 前向开销 ≈ 省下的验证时间，吞吐互相抵消。
+
+→ **要看到吞吐提升需要同时：更大 spec（=5，accept_len~4.8 才有多 token 收益）+ 真正空闲的 GPU（conc 更低 / 更小模型 / 更短输出）。** 当前 26B 在这些 harness 下始终 compute-bound，投机的收益稳定体现在 **accept 与 TPOT**，而非吞吐。
+
 ---
 
 ## 1. 怎么跑训练
