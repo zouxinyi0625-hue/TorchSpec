@@ -31,6 +31,27 @@ per-position accept（trained）：
 - **50**: pos0=88.72 pos1=78.57 pos2=67.82 pos3=58.12 pos4=49.08
 - **layer1_delta**: pos0=89.20 pos1=79.64 pos2=70.49 pos3=62.37 pos4=54.67
 
+### 4096-context runs — 三方对比（高并发饱和 bench, 989 concurrent, 1000 prompts, 2026-07-30）
+
+| 指标 | baseline (官方) | layer1_4096_s2269 | full_4096_s8001 |
+|------|:---:|:---:|:---:|
+| **accept rate %** | 65.37 | **77.26** ✅ | 72.63 |
+| **accept_len** | 4.27 | **4.86** ✅ | 4.63 |
+| **TPOT ms**（↓好） | 100.73 | **88.76** ✅ (−12%) | 89.86 |
+| out tok/s | 1295.9 | 1209.4 | **1328.4** |
+| duration s | 237.7 | 262.96 | 234.91 |
+| pos0 % | 86.09 | **90.75** | 88.54 |
+| pos1 % | 75.13 | **83.47** | 79.89 |
+| pos2 % | 64.34 | **76.77** | 72.01 |
+| pos3 % | 54.87 | **70.69** | 64.95 |
+| pos4 % | 46.44 | **64.60** | 57.76 |
+
+HF 导出：`Xinyi0625/gemma4_26ba4b_mtp_layer1_4096_s2269` · `Xinyi0625/gemma4_26ba4b_mtp_full_4096_s8001`
+
+**accept↑ / 吞吐平的原因**：此为**饱和 bench**（989 并发，TTFT≈100s，GPU compute-bound）。投机解码收益进 **TPOT（−12%）**，非吞吐——饱和时吞吐由 GPU 算力上限决定，draft 开销反而抢 FLOPs。要展示吞吐/延迟收益须用**低并发/单流**。详见 `RESULTS_layer1_delta.md §0a`。
+
+**选型**：分布内（layer1 类）用 **layer1**（accept 峰值最高）；全 maiprofile 混合用 **full**（泛化更广）。
+
 ---
 
 ## 1. 怎么跑训练
