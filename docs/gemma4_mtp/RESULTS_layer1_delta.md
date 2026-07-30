@@ -21,6 +21,38 @@ per-position (trained): 50 = 88.72/78.57/67.82/58.12/49.08 · layer1_delta = 89.
 
 ---
 
+## 0a. 4096-context runs (layer1 + full) — high-concurrency saturated bench (2026-07-30)
+
+Two 4096-context trainings (overnight `run.sh`): layer1_delta and the full
+maiprofile_26b split. Both warm-started from the official assistant, strip
+forward. Benchmarked on the **saturated** harness (989 concurrent, rate=inf,
+TTFT ≈ 100 s → GPU compute-bound), 1000 prompts, target text_only, spec=5.
+
+HF exports: `Xinyi0625/gemma4_26ba4b_mtp_layer1_4096_s2269`,
+`Xinyi0625/gemma4_26ba4b_mtp_full_4096_s8001`.
+
+| run | accept % | accept_len | pos0 | pos4 | **TPOT ms** | out tok/s | duration s |
+|-----|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| baseline (official) | 65.37 | 4.27 | 86.09 | 46.44 | 100.73 | 1295.9 | 237.7 |
+| **layer1_4096_s2269** | **77.26** | **4.86** | **90.75** | **64.60** | **88.76** | 1209.4 | 262.96 |
+| **full_4096_s8001** | 72.63 | 4.63 | 88.54 | 57.76 | 89.86 | **1328.4** | 234.91 |
+
+### 为什么 accept 大涨、吞吐没涨？
+
+**这是高并发饱和 bench（GPU 已打满，compute-bound）；投机解码在此只降 TPOT，不升吞吐。**
+
+- **accept 的收益进了 TPOT**：100.73 → 88.76 ms（**−12%**）。投机解码本质是"每 decode step 验证多 token"，accept↑ 直接降 per-token 延迟——收益真实存在。
+- **吞吐（tok/s）在饱和并发下是 FLOP-bound，不是延迟-bound**：989 请求 rate=inf，TTFT≈100 s 全在排队/prefill，GPU 满载。吞吐由算力上限决定；draft 前向 + 验证 + 拒绝 token 的浪费都吃 FLOPs，饱和时和其它请求抢 GPU → 吞吐不升甚至微降。
+- **layer1 accept 更高(77%)却吞吐更低**：duration 262.96 s（最长）落在饱和噪声区——draft 开销 + batching 波动主导，accept 微弱优势被淹没，非真实吞吐排序。
+- **结论**：draft 是好的（accept 65→77、pos0 86→91、pos4 46→65、TPOT −12%）；**饱和 bench 是"吞吐上限测试"，天然掩盖投机收益**。要展示吞吐/延迟收益应用**低并发/单流**（或 cap max-concurrency），届时 TPOT 改善直接变成更高单流吞吐 + 更低延迟。
+
+### layer1 vs full
+- layer1（专训该分布）accept 最高（77.26），pos4 最强（64.60）——分布内最优。
+- full（全量 26b）accept 72.63，泛化更广但单层峰值略低；吞吐列最高（1328，饱和噪声内）。
+- 选型：**若部署面向 layer1 类分布用 layer1；面向全 maiprofile 混合用 full。**
+
+---
+
 ## 0b. HISTORICAL (pre-fix, exp1) — the "deploys at half accept" failure
 
 > ⚠️ Below is the ORIGINAL failing run (exp1, `hf_iter_0002269`) that motivated the
