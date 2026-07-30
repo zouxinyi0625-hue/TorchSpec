@@ -52,6 +52,18 @@ HF 导出：`Xinyi0625/gemma4_26ba4b_mtp_layer1_4096_s2269` · `Xinyi0625/gemma4
 
 **选型**：分布内（layer1 类）用 **layer1**（accept 峰值最高）；全 maiprofile 混合用 **full**（泛化更广）。
 
+### spec_tokens=1（单 draft token，layer1, 同饱和 bench）
+
+| spec=1 | baseline (官方) | trained layer1 |
+|--------|:---:|:---:|
+| accept rate % (=pos0) | 89.08 | **93.12** ✅ |
+| accept_len (上限2) | 1.89 | **1.93** |
+| TPOT ms（↓好） | 101.03 | **97.47** ✅ |
+| out tok/s | 1235.3 | 1047.3 |
+| duration s | 249.99 | 310.66 |
+
+同规律：**accept 89→93、TPOT −3.5% 更好，饱和 bench 吞吐仍未涨**（trained duration 310s 属饱和噪声）。spec=1 accept_len 上限=2，收益空间比 spec=5 小；pos0 93% 与 spec=5 的 pos0 90.75% 一致，印证 draft 在首 token 上确实更强。
+
 ---
 
 ## 1. 怎么跑训练
