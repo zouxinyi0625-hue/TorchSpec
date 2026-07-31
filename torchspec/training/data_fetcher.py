@@ -147,7 +147,12 @@ class MooncakeDataset(IterableDataset):
             device=self.device,
         )
 
-        tensor_dict = tensors.to_tensor_dict()
+        # Gemma4MTPMooncakeStore.get returns a plain dict; Eagle3 store returns
+        # an object with .to_tensor_dict(). Support both.
+        if isinstance(tensors, dict):
+            tensor_dict = tensors
+        else:
+            tensor_dict = tensors.to_tensor_dict()
         if self._batch_size > 1:
             # Clone to prevent use-after-free: collator holds sample N while
             # fetching N+1, but cleanup frees the Mooncake buffer (Issue 31).
@@ -169,6 +174,16 @@ class MooncakeDataset(IterableDataset):
     def _cleanup_mooncake_data(self, sample: TrainSample) -> None:
         """Remove data from mooncake store to release buffer space."""
         shapes = sample.tensor_shapes or {}
+
+        # Gemma4 MTP samples carry "last_hidden" + the KV tensors; route to the
+        # MTP store's remover.
+        if "last_hidden" in shapes and hasattr(self.mooncake_store, "remove_mtp_tensors"):
+            self.mooncake_store.remove_mtp_tensors(
+                sample.mooncake_key,
+                has_loss_mask="loss_mask" in shapes,
+            )
+            return
+
         has_lhs = "last_hidden_states" in shapes
         has_target = "target" in shapes
 

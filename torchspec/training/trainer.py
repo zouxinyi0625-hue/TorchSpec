@@ -160,11 +160,21 @@ class Trainer(abc.ABC):
             async_put_pool_size=0,
         )
 
-        store = EagleMooncakeStore(mooncake_config)
+        store = self._make_mooncake_store(mooncake_config)
         store.setup(device=torch.cuda.current_device())
         self.mooncake_store = store
-        logger.info(f"[Rank {self.dp_rank}] EagleMooncakeStore initialized")
+        logger.info(f"[Rank {self.dp_rank}] {type(store).__name__} initialized")
         return store
+
+    def _make_mooncake_store(self, mooncake_config):
+        """Factory for the Mooncake store. Override for a specialised store
+        (e.g. Gemma4MTP carries shared_kv tensors)."""
+        return EagleMooncakeStore(mooncake_config)
+
+    def _make_collator(self, usp_enabled: bool):
+        """Factory for the data collator. Override for a specialised collator
+        (e.g. Gemma4MTP pads 4D KV tensors)."""
+        return DataCollatorWithPadding(usp_enabled=usp_enabled)
 
     # ------------------------------------------------------------------
     # Data queue
@@ -184,7 +194,7 @@ class Trainer(abc.ABC):
         if mooncake_config is not None and self.mooncake_store is None:
             self.init_mooncake_store(mooncake_config)
 
-        collator = DataCollatorWithPadding(usp_enabled=usp_enabled)
+        collator = self._make_collator(usp_enabled)
 
         prefetch_depth = getattr(self.args, "prefetch_depth", 0)
         gpu_device = torch.cuda.current_device()
@@ -241,7 +251,7 @@ class Trainer(abc.ABC):
         if mooncake_config is not None and self.mooncake_store is None:
             self.init_mooncake_store(mooncake_config)
 
-        collator = DataCollatorWithPadding(usp_enabled=usp_enabled)
+        collator = self._make_collator(usp_enabled)
 
         self._eval_data_fetcher = MooncakeDataFetcher(
             queue=queue,

@@ -93,6 +93,7 @@ class HFEngine(InferenceEngine, RayActor):
             trust_remote_code=getattr(self.args, "trust_remote_code", True),
             aux_hidden_states_layers=getattr(self.args, "aux_hidden_states_layers", None),
             mooncake_config=mooncake_config,
+            mtp_mode=getattr(self.args, "mtp_mode", False),
         )
 
         logger.info(f"HFEngine rank {self.rank}: initialized from {self.args.target_model_path}")

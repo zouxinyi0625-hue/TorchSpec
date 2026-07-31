@@ -276,3 +276,23 @@ TEMPLATE_REGISTRY.register(
         end_of_turn_token="<|user|>",
     ),
 )
+
+# Gemma4 (MaiProfile build) chat format. The official apply_chat_template
+# renders turns as:
+#   <|turn>user\n{content}<turn|>\n
+#   <|turn>model\n{content}<turn|>\n
+# NOTE: GeneralParser.format prefers the tokenizer's own apply_chat_template,
+# but GeneralParser.parse locates the assistant span by regex-matching these
+# header/end strings against that rendered text — so assistant_header /
+# end_of_turn_token MUST equal the strings the official template emits, or the
+# loss mask ends up empty. Verified token-identical + non-empty loss mask via
+# tools/gemma4_mtp/verify_chat_template.py on the MaiProfile Gemma4 build.
+TEMPLATE_REGISTRY.register(
+    name="gemma",
+    template=ChatTemplate(
+        assistant_header="<|turn>model\n",
+        user_header="<|turn>user\n",
+        system_prompt=None,
+        end_of_turn_token="<turn|>\n",
+    ),
+)

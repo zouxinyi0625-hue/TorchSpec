@@ -133,8 +133,16 @@ def fsdp2_load_full_state_dict(model, full_state, device_mesh, cpu_offload):
 
     set_model_state_dict(model, full_state, options=options)
 
-    for _name, buf in model.named_buffers():
-        dist.broadcast(buf, src=0)
+    # named_buffers() iteration order is NOT guaranteed identical across ranks
+    # (observed: rotary_emb sliding/full inv_freq buffers swap order between
+    # ranks). dist.broadcast is positional, so a per-rank order divergence makes
+    # rank A broadcast a (128,) tensor at step i while rank B receives into a
+    # (256,) buffer at the same step -> NCCL shape mismatch -> deadlock (only
+    # surfaces with >2 ranks, as ranks split into two ordering groups). Sort by
+    # buffer name to force a deterministic, rank-agnostic broadcast order.
+    buffers_by_name = dict(model.named_buffers())
+    for name in sorted(buffers_by_name):
+        dist.broadcast(buffers_by_name[name], src=0)
 
     if is_cpu_offload:
         model.to("cpu", non_blocking=True)

@@ -301,6 +301,14 @@ class AsyncTrainingController:
         """Load eval dataset on the controller and store it. Returns size (0 if none)."""
         raw_dataset = self._load_dataset_split(args, "eval")
         raw_count = len(raw_dataset)
+        # Optional cap: large eval sets make each eval pass very slow. Sample the
+        # first N (dataset is already shuffled per-layer upstream) before the
+        # dp_size alignment truncation.
+        max_eval = getattr(args, "max_eval_samples", 0)
+        if max_eval and raw_count > max_eval:
+            logger.info(f"Eval dataset capped from {raw_count} to {max_eval} (max_eval_samples)")
+            raw_dataset = raw_dataset[:max_eval]
+            raw_count = len(raw_dataset)
         # Truncate to a multiple of dp_size so every dispatch is a full batch
         usable = (raw_count // self.dp_size) * self.dp_size
         if usable < raw_count:

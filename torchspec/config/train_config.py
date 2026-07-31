@@ -39,6 +39,10 @@ class DatasetConfig:
     eval_interval: int = 50
     eval_micro_batch_size: Optional[int] = None
     eval_prompt_key: Optional[str] = None
+    # Cap the number of eval samples actually used (0 = use all). Large eval
+    # sets (e.g. tens of thousands of rows) make each eval pass very slow; a few
+    # hundred–thousand sampled rows give a stable accept-rate signal.
+    max_eval_samples: int = 0
     last_turn_loss_only: Any = "auto"  # bool or "auto"
     min_loss_tokens: int = 0  # DFlash: skip sequences with < N supervised tokens (use 2*block_size)
     prompt_key: str = "conversations"
@@ -161,6 +165,11 @@ class TrainingConfig:
     dspark_ce_loss_alpha: float = 0.1
     dspark_l1_loss_alpha: float = 0.9
     dspark_confidence_head_alpha: float = 1.0
+
+    # Gemma4 MTP-specific parameters (used by Gemma4MTPTrainer only)
+    gemma4_mtp_num_steps: int = 4
+    gemma4_mtp_loss_decay_gamma: float = 7.0
+    gemma4_mtp_teacher_force: bool = True
 
 
 @dataclass
