@@ -87,3 +87,33 @@
 
 ### 结论
 full 数据训练在**大多数层普涨**，尤其重点层的**尾部 accept**（pos3/pos4）大幅提升——这正是投机解码 accept_len 的关键。persona 退化是唯一需要跟进的点。
+
+---
+
+## 5. 吞吐（out tok/s）专项对比 — 饱和 bench 下几乎不动
+
+| layer | 官方 tok/s | 训练 tok/s | Δ | Δ% |
+|-------|:---:|:---:|:---:|:---:|
+| layer4_commercial_preference | 2572.4 | **2698.3** | +125.9 | **+4.9%** |
+| layer2_coarse_interest | 2108.5 | 2174.6 | +66.1 | +3.1% |
+| layer3_commercial_interests | 2322.6 | 2347.1 | +24.5 | +1.1% |
+| layer3_seasonality | 5724.4 | 5746.1 | +21.7 | +0.4% |
+| layer2_temporal | 2107.1 | 2121.3 | +14.2 | +0.7% |
+| layer1_intent | 2357.3 | 2363.8 | +6.5 | +0.3% |
+| layer1_actual | 2909.5 | 2910.0 | +0.5 | +0.0% |
+| layer4_biography | 230.7 | 230.8 | +0.1 | +0.0% |
+| layer3_persona | 1913.8 | 1904.4 | −9.4 | −0.5% |
+| layer1_delta | 1248.0 | 1207.9 | −40.1 | −3.2% |
+| **等权均值** | **2349.4** | **2370.4** | **+21.0** | **+0.9%** |
+
+### 为什么吞吐几乎不涨（尽管 accept_len 普遍上升）
+
+**这是 conc=none（无限并发）饱和 bench —— GPU compute-bound，投机收益进 TPOT/延迟，不进吞吐。** 完整机制见 `WORKFLOW_train_infer_parity.md §0`。核心：
+
+1. **饱和场景吞吐 = GPU 算力上限决定**，不由 accept 决定。989+ 并发把 GPU 打满（TTFT 30–240s 全在排队），draft 前向 + 多 token 验证 + 拒绝浪费都吃 FLOPs，和其它请求抢算力 → accept↑ 省下的时间无处变现成吞吐。
+2. **out tok/s 主要由「输出长度 × 该层 batching 效率」决定**，层间差异（230 vs 5746）远大于训练带来的差异（±几十）。训练的 ±0.9% 淹没在饱和噪声里。
+3. **layer1_delta 甚至 −3.2%**：纯饱和噪声（duration/batching 波动），非模型退化——它的 accept_len 实际是 +0.35 涨的。
+
+### 吞吐真能涨的场景（已验证）
+`WORKFLOW §0`：**conc=32 + spec=5**（非饱和 + 收益空间够）时，layer1_delta 训练后 **out tok/s +6.5%**（1058→1127）+ TPOT −14%。
+→ **本 §5 的饱和 10 层不是展示吞吐的场景**；要吞吐红利须在**非饱和并发 + spec≥5**下测。投机的价值在饱和场景稳定体现为 **accept_len / TPOT / 延迟**（见 §4）。
